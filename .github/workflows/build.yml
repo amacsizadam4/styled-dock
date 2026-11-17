@@ -1,0 +1,25 @@
+name: Windows build
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --component rustfmt
+      - name: Check formatting
+        run: cargo +stable fmt --check
+      - name: Build
+        run: cargo +stable build --locked
+      - name: Test dock behavior
+        run: cargo +stable test --locked window::tests -- --test-threads=1
+      - name: Test configuration
+        run: cargo +stable test --locked config::tests -- --test-threads=1
+      - name: Test animation
+        run: cargo +stable test --locked animation::tests -- --test-threads=1
+      # Native shell/work-area tests need an interactive desktop; see CONTRIBUTING.md.

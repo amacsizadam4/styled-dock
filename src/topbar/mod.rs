@@ -1,0 +1,957 @@
+//! Status bar and network, audio, battery, and display controls.
+pub(crate) mod bar_render;
+pub(crate) mod bar_status;
+pub(crate) mod panels;
+
+use std::ops::Range;
+
+use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Globalization::{
+    DATE_SHORTDATE, GetDateFormatEx, GetTimeFormatEx, TIME_NOSECONDS,
+};
+use windows::Win32::Graphics::Gdi::*;
+use windows::Win32::System::SystemInformation::GetLocalTime;
+use windows::Win32::UI::Controls::WM_MOUSELEAVE;
+use windows::Win32::UI::HiDpi::GetDpiForWindow;
+use windows::Win32::UI::Input::KeyboardAndMouse::{TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent};
+use windows::Win32::UI::Shell::{ABE_TOP, ABN_POSCHANGED};
+use windows::Win32::UI::WindowsAndMessaging::*;
+use windows::core::{Error, PCWSTR, Result, w};
+
+use crate::bar_render::{BarContents, BarIcon, BarRenderer, HEIGHT};
+use crate::bar_status::{
+    Audio, Battery, Power, PowerPlan, WM_AUDIO, WM_AUDIO_DEVICE, WM_WIFI, Wifi,
+};
+use crate::icons::Symbol;
+use crate::placement::{AppBar, WM_APPBAR, WM_REPOSITION, monitor_info};
+use crate::popup::{Popup, scale};
+use crate::system::{self, SystemAction};
+use crate::window::DockItem;
+
+const CLOCK_TIMER: usize = 1;
+const HOVER_TIMER: usize = 2;
+const WM_POWER_STATUS: u32 = WM_APP + 8;
+const WM_CLOCK_CHANGED: u32 = WM_APP + 12;
+
+pub enum Action {
+    System(SystemAction),
+    WindowsSettings(&'static str),
+    DockSettings,
+}
+
+pub struct TopBar {
+    hwnd: HWND,
+    appbar: Option<AppBar>,
+    power: Option<Power>,
+    wifi: Option<Wifi>,
+    audio: Option<Audio>,
+    monitor: HMONITOR,
+    bounds: RECT,
+    renderer: BarRenderer,
+    dpi: i32,
+    active: String,
+    active_window: Option<(HWND, u32)>,
+    clock: String,
+    battery: Battery,
+    network: &'static str,
+    volume: Option<(f32, bool)>,
+    hitboxes: Vec<(BarIcon, Range<i32>)>,
+    hovered: Option<BarIcon>,
+    tracking: bool,
+    tray: Option<crate::tray::Tray>,
+}
+
+impl TopBar {
+    pub fn new(
+        instance: HINSTANCE,
+        monitor: HMONITOR,
+        opacity: f32,
+        show_tray: bool,
+    ) -> Result<Self> {
+        let hwnd = unsafe {
+            let class = WNDCLASSW {
+                style: CS_DBLCLKS,
+                hInstance: instance,
+                lpszClassName: w!("StyledDockTopBar"),
+                lpfnWndProc: Some(window_proc),
+                hCursor: LoadCursorW(None, IDC_ARROW)?,
+                ..Default::default()
+            };
+            if RegisterClassW(&class) == 0 {
+                return Err(Error::from_thread());
+            }
+            CreateWindowExW(
+                WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_NOREDIRECTIONBITMAP,
+                class.lpszClassName,
+                w!("Styled Dock Top Bar"),
+                WS_POPUP,
+                0,
+                0,
+                1,
+                1,
+                None,
+                None,
+                Some(instance),
+                None,
+            )?
+        };
+        let renderer = match BarRenderer::new(hwnd, opacity) {
+            Ok(renderer) => renderer,
+            Err(error) => {
+                let _ = unsafe { DestroyWindow(hwnd) };
+                return Err(error);
+            }
+        };
+        let mut bar = Self {
+            hwnd,
+            appbar: None,
+            power: None,
+            wifi: None,
+            audio: None,
+            monitor: HMONITOR::default(),
+            bounds: RECT::default(),
+            renderer,
+            dpi: 0,
+            active: "Desktop".into(),
+            active_window: None,
+            clock: String::new(),
+            battery: Power::status(),
+            network: Wifi::label(),
+            volume: None,
+            hitboxes: Vec::new(),
+            hovered: None,
+            tracking: false,
+            tray: None,
+        };
+        bar.update(monitor)?;
+        bar.appbar = Some(AppBar::new(hwnd, ABE_TOP)?);
+        bar.update(monitor)?;
+        bar.power = Some(Power::new(hwnd));
+        bar.wifi = Wifi::new(hwnd);
+        bar.audio = Audio::new(hwnd).ok();
+        if show_tray {
+            bar.tray = Some(crate::tray::Tray::new(instance, hwnd)?);
+        }
+        panels::refresh_radios(hwnd);
+        bar.refresh_volume();
+        bar.tick();
+        Ok(bar)
+    }
+
+    pub fn hwnd(&self) -> HWND {
+        self.hwnd
+    }
+
+    pub fn set_visible(&mut self, visible: bool) -> Result<()> {
+        if visible {
+            crate::placement::show_topmost(self.hwnd)?;
+            self.update(self.monitor)?;
+        } else {
+            let _ = unsafe { ShowWindow(self.hwnd, SW_HIDE) };
+        }
+        Ok(())
+    }
+
+    pub fn explorer_restarted(&mut self) -> Result<()> {
+        if let Some(bar) = &mut self.appbar {
+            bar.reregister()?;
+        }
+        Ok(())
+    }
+
+    pub fn update(&mut self, monitor: HMONITOR) -> Result<()> {
+        let screen = monitor_info(monitor)?.monitorInfo.rcMonitor;
+        unsafe {
+            if self.monitor != monitor {
+                SetWindowPos(
+                    self.hwnd,
+                    None,
+                    screen.left,
+                    screen.top,
+                    1,
+                    1,
+                    SWP_NOACTIVATE | SWP_NOZORDER,
+                )?;
+                self.monitor = monitor;
+                self.bounds = RECT::default();
+            }
+            let dpi = GetDpiForWindow(self.hwnd) as i32;
+            if self.dpi != dpi {
+                self.dpi = dpi;
+                self.invalidate();
+            }
+            let height = scale(HEIGHT, dpi);
+            let bounds = if let Some(bar) = &mut self.appbar {
+                bar.reserve(screen, height)?
+            } else {
+                RECT {
+                    bottom: screen.top + height,
+                    ..screen
+                }
+            };
+            if self.bounds != bounds {
+                SetWindowPos(
+                    self.hwnd,
+                    None,
+                    bounds.left,
+                    bounds.top,
+                    (bounds.right - bounds.left).max(1),
+                    (bounds.bottom - bounds.top).max(1),
+                    SWP_NOACTIVATE | SWP_NOZORDER,
+                )?;
+                self.bounds = bounds;
+                if let Some(bar) = &self.appbar {
+                    bar.position_changed();
+                }
+                self.invalidate();
+            }
+        }
+        Ok(())
+    }
+
+    pub fn foreground_changed(&mut self, items: &[DockItem]) {
+        unsafe {
+            let foreground = GetForegroundWindow();
+            let mut pid = 0;
+            GetWindowThreadProcessId(foreground, Some(&mut pid));
+            if pid == std::process::id() {
+                return;
+            }
+            let owner = GetAncestor(foreground, GA_ROOTOWNER);
+            let name = if let Some(item) = items
+                .iter()
+                .find(|item| item.windows.contains(&foreground) || item.windows.contains(&owner))
+            {
+                item.pin.name.clone()
+            } else {
+                let mut title = [0u16; 256];
+                let length = GetWindowTextW(foreground, &mut title);
+                if length > 0 && foreground != GetShellWindow() {
+                    String::from_utf16_lossy(&title[..length as usize])
+                } else {
+                    "Desktop".into()
+                }
+            };
+            self.active_window = if name != "Desktop" && foreground != GetShellWindow() && pid != 0
+            {
+                Some((foreground, pid))
+            } else {
+                None
+            };
+            if self.active != name {
+                self.active = name;
+                self.invalidate();
+            }
+        }
+    }
+
+    pub fn handle(&mut self, message: &MSG, monitor: HMONITOR) -> Result<Option<Action>> {
+        match message.message {
+            crate::tray::WM_TRAY_CHANGED => self.invalidate(),
+            WM_REPOSITION => self.update(monitor)?,
+            WM_PAINT => self.paint()?,
+            WM_TIMER if message.wParam.0 == CLOCK_TIMER => self.tick(),
+            WM_TIMER if message.wParam.0 == HOVER_TIMER => {
+                self.paint()?;
+                if !self.renderer.animating(self.hovered) {
+                    unsafe {
+                        let _ = KillTimer(Some(self.hwnd), HOVER_TIMER);
+                    }
+                }
+            }
+            WM_CLOCK_CHANGED => {
+                crate::theme::refresh();
+                self.invalidate();
+                self.tick();
+            }
+            WM_POWER_STATUS => {
+                let battery = Power::status();
+                if self.battery != battery {
+                    self.battery = battery;
+                    self.invalidate();
+                }
+            }
+            panels::WM_RADIOS => self.invalidate(),
+            WM_WIFI => {
+                let network = Wifi::label();
+                if self.network != network {
+                    self.network = network;
+                    self.invalidate();
+                }
+            }
+            WM_AUDIO_DEVICE | WM_AUDIO => {
+                if message.message == WM_AUDIO_DEVICE
+                    && let Some(audio) = &mut self.audio
+                {
+                    audio.reconnect();
+                }
+                self.refresh_volume();
+            }
+            WM_MOUSEMOVE => {
+                let x = message.lParam.0 as i16 as i32;
+                if !self.tracking {
+                    self.tracking = unsafe {
+                        TrackMouseEvent(&mut TRACKMOUSEEVENT {
+                            cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
+                            dwFlags: TME_LEAVE,
+                            hwndTrack: self.hwnd,
+                            dwHoverTime: 0,
+                        })
+                        .is_ok()
+                    };
+                }
+                let hovered = self.icon_at(x).map(|(icon, _)| icon);
+                if self.hovered != hovered {
+                    self.hovered = hovered;
+                    self.invalidate();
+                }
+            }
+            WM_MOUSELEAVE => {
+                self.tracking = false;
+                if self.hovered.take().is_some() {
+                    self.invalidate();
+                }
+            }
+            WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_LBUTTONDBLCLK | WM_RBUTTONUP | WM_LBUTTONUP => {
+                let x = message.lParam.0 as i16 as i32;
+                if let Some((icon, anchor)) = self.icon_at(x) {
+                    if let BarIcon::Tray(index) = icon {
+                        if let Some(tray) = &self.tray
+                            && let Some(item) = tray.state().icons().nth(index)
+                        {
+                            let mut point = POINT::default();
+                            let _ = unsafe { GetCursorPos(&mut point) };
+                            item.click(message.message, point);
+                        }
+                        return Ok(None);
+                    }
+                    if message.message != WM_LBUTTONUP {
+                        return Ok(None);
+                    }
+                    self.hovered = Some(icon);
+                    self.paint()?;
+                    let result = match icon {
+                        BarIcon::System => self.system_menu(),
+                        BarIcon::Active => self.active_menu(),
+                        BarIcon::Battery => self.battery_menu(anchor),
+                        BarIcon::Wifi => self.wifi_menu(anchor),
+                        BarIcon::Bluetooth => self.bluetooth_menu(anchor),
+                        BarIcon::Display => self.display_menu(anchor),
+                        BarIcon::Volume => self.volume_menu(anchor),
+                        BarIcon::Clock => Ok(Some(Action::System(SystemAction::Notifications))),
+                        BarIcon::QuickSettings => self.quick_settings(anchor),
+                        BarIcon::Tray(_) => unreachable!(),
+                    };
+                    self.hovered = None;
+                    self.tracking = false;
+                    self.invalidate();
+                    return result;
+                }
+            }
+            _ => unsafe {
+                DispatchMessageW(message);
+            },
+        }
+        Ok(None)
+    }
+
+    fn icon_at(&self, x: i32) -> Option<(BarIcon, i32)> {
+        self.hitboxes
+            .iter()
+            .find(|(_, bounds)| bounds.contains(&x))
+            .map(|(icon, bounds)| (*icon, bounds.end))
+    }
+
+    fn refresh_volume(&mut self) {
+        let volume = self.audio.as_ref().and_then(Audio::status);
+        if self.volume != volume {
+            self.volume = volume;
+            self.invalidate();
+        }
+    }
+
+    fn tick(&mut self) {
+        let battery = Power::status();
+        if self.battery != battery {
+            self.battery = battery;
+            self.invalidate();
+        }
+        self.refresh_volume();
+        unsafe {
+            let now = GetLocalTime();
+            let mut text = [0; 64];
+            let length = GetTimeFormatEx(
+                PCWSTR::null(),
+                TIME_NOSECONDS,
+                Some(&now),
+                PCWSTR::null(),
+                Some(&mut text),
+            );
+            if length > 0 {
+                let time = String::from_utf16_lossy(&text[..length as usize - 1]);
+                let length = GetDateFormatEx(
+                    PCWSTR::null(),
+                    DATE_SHORTDATE,
+                    Some(&now),
+                    PCWSTR::null(),
+                    Some(&mut text),
+                    PCWSTR::null(),
+                );
+                let clock = if length > 0 {
+                    let date = String::from_utf16_lossy(&text[..length as usize - 1]);
+                    format!("{date}  {time}")
+                } else {
+                    time
+                };
+                if self.clock != clock {
+                    self.clock = clock;
+                    self.invalidate();
+                }
+            }
+            let delay = 60_000 - u32::from(now.wSecond) * 1000 - u32::from(now.wMilliseconds);
+            SetTimer(Some(self.hwnd), CLOCK_TIMER, delay.max(10), None);
+        }
+    }
+
+    fn invalidate(&self) {
+        unsafe {
+            SetTimer(Some(self.hwnd), HOVER_TIMER, 16, None);
+        }
+        let _ = unsafe { InvalidateRect(Some(self.hwnd), None, false) };
+    }
+
+    fn paint(&mut self) -> Result<()> {
+        let mut paint = PAINTSTRUCT::default();
+        let mut client = RECT::default();
+        unsafe {
+            BeginPaint(self.hwnd, &mut paint);
+            let _ = EndPaint(self.hwnd, &paint);
+            GetClientRect(self.hwnd, &mut client)?;
+        }
+        if client.right > 0 && client.bottom > 0 {
+            let tray = self.tray.as_ref().map(|tray| tray.state());
+            let icons: Vec<_> = tray
+                .as_ref()
+                .map(|state| state.icons().collect())
+                .unwrap_or_default();
+            self.hitboxes = self.renderer.paint(
+                (client.right as u32, client.bottom as u32),
+                self.dpi,
+                BarContents {
+                    active: &self.active,
+                    clock: &self.clock,
+                    battery: self.battery,
+                    wifi_disconnected: self.network != "Wi-Fi connected",
+                    audio: self.volume,
+                    hovered: self.hovered,
+                    tray: &icons,
+                },
+            )?;
+        }
+        Ok(())
+    }
+
+    fn battery_menu(&mut self, anchor: i32) -> Result<Option<Action>> {
+        let battery = Power::status();
+        let active = PowerPlan::active().ok();
+        let plans = PowerPlan::list().unwrap_or_default();
+        let mut menu = Popup::new(self.hwnd, 252)?;
+        menu.heading(&battery.label())?;
+        if let Some(source) = battery.power_source() {
+            menu.detail(source)?;
+        }
+        menu.divider()?;
+        menu.detail(if plans.is_empty() {
+            "Power plans unavailable"
+        } else {
+            "Power plan"
+        })?;
+        for (index, plan) in plans.iter().enumerate() {
+            menu.option(index as u32 + 2, &plan.name, true, plan.is_active(active))?;
+        }
+        menu.divider()?;
+        menu.action(1, "Power and Battery Settings…")?;
+        match self.track_menu(&menu, anchor)? {
+            0 => {}
+            1 => return Ok(Some(Action::WindowsSettings("ms-settings:powersleep"))),
+            choice => {
+                if let Some(plan) = plans.get(choice as usize - 2)
+                    && !plan.is_active(PowerPlan::active().ok())
+                {
+                    plan.activate().map_err(|error| {
+                        Error::new(
+                            error.code(),
+                            format!("Could not switch to {}.\n\n{error}", plan.name),
+                        )
+                    })?;
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    fn active_menu(&mut self) -> Result<Option<Action>> {
+        let target = self.active_window;
+        let mut menu = Popup::new(self.hwnd, 238)?;
+        menu.heading(&self.active)?;
+        menu.option(1, "End task", target.is_some(), false)?;
+        let choice = menu.track(
+            self.hwnd,
+            POINT {
+                x: self.bounds.left + scale(43, self.dpi),
+                y: self.bounds.bottom + scale(3, self.dpi),
+            },
+            TPM_LEFTALIGN,
+        );
+        if choice == 1
+            && let Some((hwnd, pid)) = target
+        {
+            crate::system::end_task(hwnd, pid)?;
+        }
+        Ok(None)
+    }
+
+    fn system_menu(&mut self) -> Result<Option<Action>> {
+        let mut menu = Popup::new(self.hwnd, 238)?;
+        menu.heading("Windows")?;
+        let actions = [
+            SystemAction::About,
+            SystemAction::TaskManager,
+            SystemAction::Store,
+            SystemAction::Sleep,
+            SystemAction::Restart,
+            SystemAction::Shutdown,
+            SystemAction::Lock,
+            SystemAction::LogOut,
+        ];
+        for (index, action) in actions.iter().enumerate() {
+            if index == 3 || index == 6 {
+                menu.divider()?;
+            }
+            menu.option(
+                index as u32 + 1,
+                action.label(),
+                !matches!(action, SystemAction::Sleep) || system::sleep_available(),
+                false,
+            )?;
+        }
+        let choice = menu.track(
+            self.hwnd,
+            POINT {
+                x: self.bounds.left + scale(7, self.dpi),
+                y: self.bounds.bottom + scale(3, self.dpi),
+            },
+            TPM_LEFTALIGN,
+        );
+        Ok(choice
+            .checked_sub(1)
+            .and_then(|index| actions.get(index as usize))
+            .copied()
+            .map(Action::System))
+    }
+
+    fn volume_rows(&self, menu: &mut Popup) -> Result<()> {
+        let enabled = self.volume.is_some();
+        menu.slider(
+            if self.volume.is_some_and(|(_, muted)| muted) {
+                "Volume muted"
+            } else if enabled {
+                "Volume"
+            } else {
+                "Volume unavailable"
+            },
+            self.volume.map_or(0.0, |(level, _)| level),
+            enabled,
+        )?;
+        let mute = if self.volume.is_some_and(|(_, muted)| muted) {
+            "Unmute"
+        } else {
+            "Mute"
+        };
+        menu.option(3, mute, enabled, false)
+    }
+
+    fn apply_volume(&mut self, choice: u32) -> Result<()> {
+        if choice == 3
+            && let Some(audio) = &self.audio
+        {
+            audio.toggle_mute()?;
+        }
+        self.refresh_volume();
+        Ok(())
+    }
+
+    fn volume_menu(&mut self, anchor: i32) -> Result<Option<Action>> {
+        self.refresh_volume();
+        let mut menu = Popup::new(self.hwnd, 280)?;
+        menu.heading("Sound")?;
+        menu.action(7, "Choose sound output…")?;
+        self.volume_rows(&mut menu)?;
+        menu.divider()?;
+        menu.action(6, "Sound Settings…")?;
+        let choice = self.track_menu(&menu, anchor)?;
+        self.apply_volume(choice)?;
+        Ok(match choice {
+            6 => Some(Action::WindowsSettings("ms-settings:sound")),
+            7 => Some(Action::System(SystemAction::SoundOutput)),
+            _ => None,
+        })
+    }
+
+    fn wifi_menu(&mut self, anchor: i32) -> Result<Option<Action>> {
+        panels::refresh_radios(self.hwnd);
+        let mut menu = Popup::new(self.hwnd, 350)?;
+        menu.heading("Wi-Fi")?;
+        menu.toggle(1, "Wi-Fi", panels::radio_state(false))?;
+        menu.divider()?;
+        let networks = panels::networks();
+        let mut rows = Vec::new();
+        match networks {
+            Ok(mut networks) => {
+                networks.truncate(5);
+                rows = networks;
+                menu.detail(if rows.is_empty() {
+                    "No networks found"
+                } else {
+                    "Networks"
+                })?;
+                for (index, network) in rows.iter().enumerate() {
+                    let status = if network.connected {
+                        "Connected"
+                    } else if !network.profile.is_empty() {
+                        "Saved"
+                    } else {
+                        "Available"
+                    };
+                    let security = if network.secure { "Secured" } else { "Open" };
+                    menu.tile(
+                        index as u32 + 100,
+                        Symbol::Wifi,
+                        &network.name,
+                        &format!("{status} · {security} · {}%", network.signal),
+                        true,
+                        network.connected,
+                    )?;
+                }
+            }
+            Err(_) => {
+                menu.detail("Network list unavailable in this app")?;
+                menu.detail("View networks in Windows below")?;
+            }
+        }
+        menu.divider()?;
+        menu.action(2, "Other networks…")?;
+        menu.action(3, "Wi-Fi settings…")?;
+        let choice = self.track_menu(&menu, anchor)?;
+        if choice >= 100
+            && let Some(network) = rows.get((choice - 100) as usize)
+        {
+            if network.connected {
+                return Ok(None);
+            }
+            if !network.profile.is_empty() {
+                panels::connect(network)?;
+                return Ok(None);
+            }
+            return Ok(Some(Action::WindowsSettings("ms-availablenetworks:")));
+        }
+        Ok(match choice {
+            1 => Some(Action::System(SystemAction::ToggleWifi)),
+            2 => Some(Action::WindowsSettings("ms-availablenetworks:")),
+            3 => Some(Action::WindowsSettings("ms-settings:network-wifi")),
+            _ => None,
+        })
+    }
+
+    fn bluetooth_menu(&mut self, anchor: i32) -> Result<Option<Action>> {
+        panels::refresh_radios(self.hwnd);
+        let mut menu = Popup::new(self.hwnd, 350)?;
+        menu.heading("Bluetooth")?;
+        menu.toggle(1, "Bluetooth", panels::radio_state(true))?;
+        menu.divider()?;
+        let devices = panels::bluetooth_devices();
+        menu.detail(if devices.is_empty() {
+            "No cached Bluetooth devices"
+        } else {
+            "Your devices"
+        })?;
+        for (index, (name, connected)) in devices.iter().take(5).enumerate() {
+            menu.tile(
+                index as u32 + 100,
+                Symbol::Bluetooth,
+                name,
+                if *connected { "Connected" } else { "Paired" },
+                true,
+                *connected,
+            )?;
+        }
+        menu.divider()?;
+        menu.action(2, "Add or manage devices…")?;
+        menu.action(3, "Bluetooth settings…")?;
+        let choice = self.track_menu(&menu, anchor)?;
+        Ok(match choice {
+            1 => Some(Action::System(SystemAction::ToggleBluetooth)),
+            2 | 3 | 100.. => Some(Action::WindowsSettings("ms-settings:bluetooth")),
+            _ => None,
+        })
+    }
+
+    fn display_menu(&mut self, anchor: i32) -> Result<Option<Action>> {
+        let brightness = panels::Brightness::for_monitor(self.monitor);
+        let screen = monitor_info(self.monitor)?.monitorInfo.rcMonitor;
+        let mut menu = Popup::new(self.hwnd, 350)?;
+        menu.heading("Display")?;
+        menu.detail(&format!(
+            "{} × {} · {}% scaling",
+            screen.right - screen.left,
+            screen.bottom - screen.top,
+            (self.dpi * 100 + 48) / 96
+        ))?;
+        if let Some(brightness) = &brightness {
+            menu.slider("Brightness", brightness.level, true)?;
+        } else {
+            menu.detail("Brightness is managed by Windows or your monitor")?;
+        }
+        menu.divider()?;
+        menu.tile(
+            10,
+            Symbol::Appearance,
+            "Color mode",
+            if crate::theme::dark() {
+                "Dark · change in dock settings"
+            } else {
+                "Light · change in dock settings"
+            },
+            true,
+            false,
+        )?;
+        menu.tile(
+            11,
+            Symbol::Moon,
+            "Night light",
+            "Open Windows night light controls",
+            true,
+            false,
+        )?;
+        menu.divider()?;
+        menu.action(12, "Display settings…")?;
+        let choice = menu.track_with_slider(
+            self.hwnd,
+            POINT {
+                x: self.bounds.left + anchor,
+                y: self.bounds.bottom + scale(3, self.dpi),
+            },
+            TPM_RIGHTALIGN,
+            &|level| {
+                if let Some(brightness) = &brightness {
+                    brightness.set(level)?;
+                }
+                Ok(())
+            },
+        )?;
+        Ok(match choice {
+            10 => Some(Action::DockSettings),
+            11 => Some(Action::WindowsSettings("ms-settings:nightlight")),
+            12 => Some(Action::WindowsSettings("ms-settings:display")),
+            _ => None,
+        })
+    }
+
+    pub fn keyboard_menu(&mut self) -> Result<Option<Action>> {
+        self.quick_settings(self.bounds.right - self.bounds.left - scale(14, self.dpi))
+    }
+
+    fn tray_menu(&mut self, anchor: i32) -> Result<Option<Action>> {
+        let mut menu = Popup::new(self.hwnd, 300)?;
+        menu.heading("All app tray icons")?;
+        // Do not hold a RefCell borrow while native popup loops dispatch tray IPC.
+        let icons: Vec<_> = self
+            .tray
+            .as_ref()
+            .map(|tray| {
+                tray.state()
+                    .icons()
+                    .map(|icon| (icon.menu_key(), icon.title.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if icons.is_empty() {
+            menu.detail("No app tray icons available")?;
+        }
+        for (index, icon) in icons.iter().enumerate() {
+            menu.action(
+                index as u32 + 1,
+                if icon.1.is_empty() {
+                    "App tray icon"
+                } else {
+                    &icon.1
+                },
+            )?;
+        }
+        let choice = menu.track(
+            self.hwnd,
+            POINT {
+                x: self.bounds.left + anchor,
+                y: self.bounds.bottom,
+            },
+            TPM_RIGHTALIGN,
+        );
+        if let Some(icon) = choice
+            .checked_sub(1)
+            .and_then(|index| icons.get(index as usize))
+        {
+            let mut action = Popup::new(self.hwnd, 220)?;
+            action.action(1, "Open")?;
+            action.action(2, "Show app menu")?;
+            let point = POINT {
+                x: self.bounds.left + anchor,
+                y: self.bounds.bottom,
+            };
+            let choice = action.track(self.hwnd, point, TPM_RIGHTALIGN);
+            if let Some(tray) = &self.tray {
+                if let Some(current) = tray
+                    .state()
+                    .icons()
+                    .find(|current| current.menu_key() == icon.0)
+                {
+                    match choice {
+                        1 => current.click(WM_LBUTTONUP, point),
+                        2 => current.click(WM_RBUTTONUP, point),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    fn quick_settings(&mut self, anchor: i32) -> Result<Option<Action>> {
+        self.refresh_volume();
+        panels::refresh_radios(self.hwnd);
+        let mut menu = Popup::new(self.hwnd, 400)?;
+        menu.heading("Quick Settings")?;
+        let networks = panels::networks().unwrap_or_default();
+        let network_name = networks
+            .iter()
+            .find(|network| network.connected)
+            .map_or(self.network, |network| network.name.as_str());
+        menu.card(
+            10,
+            Symbol::Wifi,
+            "Wi-Fi",
+            network_name,
+            panels::radio_state(false) == Some(true),
+        )?;
+        menu.card(
+            11,
+            Symbol::Bluetooth,
+            "Bluetooth",
+            match panels::radio_state(true) {
+                Some(true) => "On",
+                Some(false) => "Off",
+                None => "Manage devices",
+            },
+            panels::radio_state(true) == Some(true),
+        )?;
+        menu.card(12, Symbol::Display, "Display", "Brightness & color", false)?;
+        menu.card(13, Symbol::Moon, "Focus", "Windows focus settings", false)?;
+        menu.card(
+            14,
+            Symbol::Battery,
+            "Power & battery",
+            &self.battery.label(),
+            false,
+        )?;
+        menu.card(
+            15,
+            Symbol::Settings,
+            "Dock settings",
+            "Appearance & apps",
+            false,
+        )?;
+        menu.divider()?;
+        self.volume_rows(&mut menu)?;
+        menu.divider()?;
+        menu.action(6, "Sound settings…")?;
+        menu.action(90, "All app tray icons…")?;
+        let choice = self.track_menu(&menu, anchor)?;
+        self.apply_volume(choice)?;
+        match choice {
+            10 => self.wifi_menu(anchor),
+            90 => self.tray_menu(anchor),
+            11 => self.bluetooth_menu(anchor),
+            12 => self.display_menu(anchor),
+            13 => Ok(Some(Action::WindowsSettings("ms-settings:quiethours"))),
+            14 => self.battery_menu(anchor),
+            15 => Ok(Some(Action::DockSettings)),
+            6 => Ok(Some(Action::WindowsSettings("ms-settings:sound"))),
+            _ => Ok(None),
+        }
+    }
+
+    fn track_menu(&mut self, menu: &Popup, anchor: i32) -> Result<u32> {
+        let choice = menu.track_with_slider(
+            self.hwnd,
+            POINT {
+                x: self.bounds.left + anchor,
+                y: self.bounds.bottom + scale(3, self.dpi),
+            },
+            TPM_RIGHTALIGN,
+            &|level| {
+                if let Some(audio) = &self.audio {
+                    audio.set_volume(level)?;
+                }
+                Ok(())
+            },
+        );
+        self.network = Wifi::label();
+        self.battery = Power::status();
+        self.refresh_volume();
+        self.tick();
+        choice
+    }
+}
+
+impl Drop for TopBar {
+    fn drop(&mut self) {
+        drop(self.tray.take());
+        drop(self.appbar.take());
+        drop(self.audio.take());
+        drop(self.wifi.take());
+        drop(self.power.take());
+        unsafe {
+            let _ = KillTimer(Some(self.hwnd), CLOCK_TIMER);
+            let _ = DestroyWindow(self.hwnd);
+        }
+    }
+}
+
+unsafe extern "system" fn window_proc(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    let notification = match message {
+        WM_MOUSEACTIVATE => return LRESULT(MA_NOACTIVATE as isize),
+        WM_CLOSE => {
+            unsafe { PostQuitMessage(0) };
+            return LRESULT(0);
+        }
+        WM_APPBAR if wparam.0 as u32 == ABN_POSCHANGED => WM_REPOSITION,
+        WM_DPICHANGED => WM_REPOSITION,
+        WM_POWERBROADCAST => {
+            unsafe {
+                let _ = PostMessageW(Some(hwnd), WM_POWER_STATUS, WPARAM(0), LPARAM(0));
+                if wparam.0 as u32 == PBT_APMRESUMEAUTOMATIC {
+                    let _ = PostMessageW(Some(hwnd), WM_CLOCK_CHANGED, WPARAM(0), LPARAM(0));
+                }
+            }
+            return LRESULT(1);
+        }
+        WM_SETTINGCHANGE | WM_TIMECHANGE => WM_CLOCK_CHANGED,
+        _ => return unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
+    };
+    let _ = unsafe { PostMessageW(Some(hwnd), notification, WPARAM(0), LPARAM(0)) };
+    LRESULT(0)
+}

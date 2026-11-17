@@ -1,0 +1,62 @@
+# Copy this to config.toml in the working directory or beside the executable.
+# Relative paths resolve next to the configuration file.
+
+[placement]
+# Use "primary", "cursor" (at startup), or a device name such as '\\.\DISPLAY2'.
+monitor = "primary"
+# Reserve the dock band for maximized windows. Leave off when using auto_hide.
+reserve_space = false
+# Move the pointer to the bottom edge of the monitor to reveal the dock.
+auto_hide = false
+hide_on_fullscreen = true
+# Hide Explorer's taskbars while Styled Dock is running. A watchdog restores them.
+# Temporarily releases its reserved space and restores your auto-hide setting on exit.
+hide_taskbar = false
+
+[dock]
+# Fixed shortcuts that open Windows Start, Windows Search, and recent downloads.
+show_start = true
+show_search = true
+show_downloads = true
+# Positions count ordinary items before each shortcut; drag to change these.
+start_position = 0
+search_position = 0
+search_first = false
+
+[top_bar]
+# Share the dock's display and reserve a band at its top edge.
+enabled = true
+# Mirror app notification icons in the top bar (experimental Windows shell integration).
+show_tray = true
+
+[appearance]
+theme = "auto" # auto follows Windows app mode; light or dark overrides it
+size_percent = 100 # 60-160
+icon_size = 48 # 24-96 logical px before dock scaling
+icon_spacing = 12 # 0-32 logical px between icons
+edge_padding = 16 # 4-40 logical px on either side
+label_delay_ms = 1000 # 0-3000, wait before showing an app name
+zoom_percent = 68 # 0-100, 0 turns hover zoom off
+animation_speed_percent = 100 # 25-200, 0 makes transitions instant
+launch_bounce = true
+auto_hide_delay_ms = 350 # 100-3000, applies in Auto-hide mode
+dock_opacity_percent = 78 # 0-100, background only
+top_bar_opacity_percent = 36 # 0-100, background only
+
+[[pinned]]
+name = "File Explorer"
+target = '%WINDIR%\explorer.exe'
+
+[[pinned]]
+name = "Notepad"
+target = '%WINDIR%\System32\notepad.exe'
+
+[[pinned]]
+name = "Calculator"
+# Run Get-StartApps in PowerShell to find the AppID for an installed app.
+target = 'shell:AppsFolder\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App'
+
+# To pin a Windows shortcut, use its .lnk path.
+# [[pinned]]
+# name = "My App"
+# target = 'C:\Users\You\Desktop\My App.lnk'

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="20" height="20" viewBox="0 0 20 20">
+  <title>wifi.svg</title>
+  <g id="Layer_1" data-name="Layer 1">
+    <path d="M2.5 7.6 C6.812 3.89 13.188 3.89 17.5 7.6 M5.1 10.3 C7.915 7.871 12.085 7.871 14.9 10.3 M7.6 13 C8.983 11.821 11.017 11.821 12.4 13 M10 15.8 L10.01 15.8" fill="none" stroke="#141922" stroke-width="3.2" stroke-linecap="round"/>
+    <path d="M2.5 7.6 C6.812 3.89 13.188 3.89 17.5 7.6 M5.1 10.3 C7.915 7.871 12.085 7.871 14.9 10.3 M7.6 13 C8.983 11.821 11.017 11.821 12.4 13 M10 15.8 L10.01 15.8" fill="none" stroke="#f7f9ff" stroke-width="1.6" stroke-linecap="round"/>
+  </g>
+</svg>

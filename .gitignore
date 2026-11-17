@@ -1,0 +1,11 @@
+/target/
+/config.toml
+/.test-tmp/
+*.log
+*.dmp
+.env
+.env.*
+.vs/
+/.idea/
+/release/
+*.toml.backup-*

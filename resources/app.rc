@@ -1,0 +1,118 @@
+#include <windows.h>
+#include <commctrl.h>
+
+1 24 "resources/app.manifest"
+
+1 VERSIONINFO
+FILEVERSION 1,0,0,0
+PRODUCTVERSION 1,0,0,0
+FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+FILEFLAGS 0
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "FileDescription", "Styled Dock - macOS-inspired dock for Windows\0"
+            VALUE "FileVersion", "1.0.0\0"
+            VALUE "InternalName", "styled-dock\0"
+            VALUE "OriginalFilename", "styled-dock.exe\0"
+            VALUE "ProductName", "Styled Dock\0"
+            VALUE "ProductVersion", "1.0\0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END
+
+101 DIALOGEX 0, 0, 449, 270
+STYLE DS_SETFONT | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Styled Dock Settings"
+FONT 9, "Segoe UI Variable Text"
+BEGIN
+    LTEXT "Styled Dock", 136, 13, 16, 91, 16
+    CONTROL "", 133, "ListBox", LBS_NOTIFY | LBS_HASSTRINGS | LBS_OWNERDRAWFIXED | LBS_NOINTEGRALHEIGHT | WS_TABSTOP, 8, 42, 99, 144
+    LTEXT "", 134, 129, 16, 300, 24, SS_NOPREFIX
+    LTEXT "", 135, 130, 42, 298, 15, SS_NOPREFIX
+
+    LTEXT "&Display", 200, 130, 71, 95, 11
+    COMBOBOX 110, 249, 68, 179, 96, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT "&Dock mode", 201, 130, 98, 95, 11
+    COMBOBOX 111, 249, 95, 179, 88, CBS_DROPDOWNLIST | WS_TABSTOP
+    CONTROL "Show &top bar", 112, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 130, 132, 298, 14
+    CONTROL "Show app tray icons (experimental)", 144, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 130, 210, 298, 14
+    CONTROL "Hide dock and top bar in &fullscreen", 113, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 130, 158, 298, 14
+    CONTROL "Hide the &Windows taskbar while the dock is running", 114, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 130, 184, 298, 14
+
+    LTEXT "Dock si&ze (%)", 210, 130, 65, 116, 10
+    EDITTEXT 115, 249, 62, 40, 14, ES_NUMBER | WS_TABSTOP
+    LTEXT "60-160", 211, 300, 65, 124, 10
+    LTEXT "Icon size (px)", 223, 130, 93, 116, 10
+    EDITTEXT 140, 249, 90, 40, 14, ES_NUMBER | WS_TABSTOP
+    LTEXT "24-96", 224, 300, 93, 124, 10
+    LTEXT "Icon spacing (px)", 225, 130, 121, 116, 10
+    EDITTEXT 141, 249, 118, 40, 14, ES_NUMBER | WS_TABSTOP
+    LTEXT "0-32", 226, 300, 121, 124, 10
+    LTEXT "Edge padding (px)", 227, 130, 149, 116, 10
+    EDITTEXT 142, 249, 146, 40, 14, ES_NUMBER | WS_TABSTOP
+    LTEXT "4-40", 228, 300, 149, 124, 10
+    LTEXT "App label delay (ms)", 229, 130, 177, 116, 10
+    EDITTEXT 143, 249, 174, 40, 14, ES_NUMBER | WS_TABSTOP
+    LTEXT "0-3000 (1000 = 1 second)", 230, 300, 177, 124, 10
+    LTEXT "&Hover zoom (%)", 212, 130, 86, 116, 10
+    EDITTEXT 116, 249, 83, 40, 14, ES_NUMBER | WS_TABSTOP
+    LTEXT "0-100 (0 is off)", 213, 300, 86, 124, 10
+    LTEXT "Animation speed (%)", 214, 130, 107, 116, 10
+    EDITTEXT 117, 249, 104, 40, 14, ES_NUMBER | WS_TABSTOP
+    LTEXT "0 (instant) or 25-200", 215, 300, 107, 124, 10
+    LTEXT "Auto-hide delay (ms)", 216, 130, 128, 116, 10
+    EDITTEXT 118, 249, 125, 40, 14, ES_NUMBER | WS_TABSTOP
+    LTEXT "100-3000", 217, 300, 128, 124, 10
+    LTEXT "Dock background opacity", 218, 130, 151, 116, 10
+    CONTROL "", 131, TRACKBAR_CLASS, TBS_NOTICKS | WS_TABSTOP, 246, 149, 147, 21
+    LTEXT "", 137, 398, 151, 33, 10
+    LTEXT "Top bar background opacity", 219, 130, 174, 116, 10
+    CONTROL "", 132, TRACKBAR_CLASS, TBS_NOTICKS | WS_TABSTOP, 246, 172, 147, 21
+    LTEXT "", 138, 398, 174, 33, 10
+    CONTROL "Bounce on launch", 119, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 130, 195, 148, 12
+    LTEXT "Color mode", 222, 130, 214, 95, 10
+    COMBOBOX 139, 249, 210, 179, 72, CBS_DROPDOWNLIST | WS_TABSTOP
+
+    CONTROL "Show &Start menu", 145, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 130, 71, 298, 14
+    CONTROL "Show Windows &Search", 146, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 130, 101, 298, 14
+    CONTROL "Show &Downloads", 147, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 130, 131, 298, 14
+
+    LISTBOX 120, 130, 65, 195, 74, LBS_NOTIFY | LBS_NOINTEGRALHEIGHT | WS_VSCROLL | WS_TABSTOP
+    PUSHBUTTON "Move &up", 121, 333, 65, 95, 17
+    PUSHBUTTON "Move &down", 122, 333, 87, 95, 17
+    PUSHBUTTON "&Remove", 123, 333, 109, 95, 17
+    LTEXT "&Name", 220, 130, 151, 50, 11
+    EDITTEXT 124, 185, 147, 243, 16, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT "Pa&th / App ID", 221, 130, 177, 52, 11
+    EDITTEXT 125, 185, 173, 179, 16, ES_AUTOHSCROLL | WS_TABSTOP
+    PUSHBUTTON "&Browse...", 126, 369, 173, 59, 16
+    PUSHBUTTON "Installed a&pps...", 148, 130, 199, 95, 17
+    PUSHBUTTON "&Add", 127, 289, 199, 57, 17
+    PUSHBUTTON "Update &selected", 128, 351, 199, 77, 17
+
+    LTEXT "", 129, 130, 230, 298, 9, SS_PATHELLIPSIS | SS_NOPREFIX
+    PUSHBUTTON "Restore de&faults", 130, 130, 244, 84, 17
+    DEFPUSHBUTTON "&Save and restart", IDOK, 260, 244, 98, 17
+    PUSHBUTTON "Cancel", IDCANCEL, 364, 244, 64, 17
+END
+
+102 DIALOGEX 0, 0, 320, 280
+STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Choose an installed app"
+FONT 9, "Segoe UI"
+BEGIN
+    LTEXT "&Search installed apps", -1, 12, 12, 290, 12
+    EDITTEXT 1001, 12, 28, 296, 16, ES_AUTOHSCROLL | WS_TABSTOP
+    LISTBOX 1002, 12, 52, 296, 188, LBS_NOTIFY | LBS_NOINTEGRALHEIGHT | WS_VSCROLL | WS_TABSTOP
+    DEFPUSHBUTTON "Choose", IDOK, 182, 252, 60, 17
+    PUSHBUTTON "Cancel", IDCANCEL, 248, 252, 60, 17
+END
