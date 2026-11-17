@@ -50,7 +50,7 @@ fn radios(toggle: Option<bool>) -> Result<()> {
                 if start.elapsed() > Duration::from_secs(3) {
                     return Err(Error::new(
                         E_FAIL,
-                        "Windows did not respond to the radio request.",
+                        crate::i18n::text("Windows did not respond to the radio request."),
                     ));
                 }
                 std::thread::sleep(Duration::from_millis(10));
@@ -71,7 +71,9 @@ fn radios(toggle: Option<bool>) -> Result<()> {
             if bounded!(Radio::RequestAccessAsync()) != RadioAccessStatus::Allowed {
                 return Err(Error::new(
                     E_FAIL,
-                    "Windows does not allow this app to control the radio. Use Windows Settings.",
+                    crate::i18n::text(
+                        "Windows does not allow this app to control the radio. Use Windows Settings.",
+                    ),
                 ));
             }
             let state = if radio.State()? == RadioState::On {
@@ -82,7 +84,7 @@ fn radios(toggle: Option<bool>) -> Result<()> {
             if bounded!(radio.SetStateAsync(state)) != RadioAccessStatus::Allowed {
                 return Err(Error::new(
                     E_FAIL,
-                    "Windows could not change the radio. Use Windows Settings.",
+                    crate::i18n::text("Windows could not change the radio. Use Windows Settings."),
                 ));
             }
             changed = true;
@@ -94,7 +96,10 @@ fn radios(toggle: Option<bool>) -> Result<()> {
         };
     }
     if toggle.is_some() && !changed {
-        return Err(Error::new(E_FAIL, "No controllable radio was found."));
+        return Err(Error::new(
+            E_FAIL,
+            crate::i18n::text("No controllable radio was found."),
+        ));
     }
     if let Ok(mut cache) = RADIOS.lock() {
         *cache = states;
@@ -109,7 +114,7 @@ pub fn toggle_radio(bluetooth: bool) -> Result<()> {
     // The shell worker is STA; use a dedicated MTA for WinRT radio access.
     std::thread::spawn(move || radios(Some(bluetooth)))
         .join()
-        .map_err(|_| Error::new(E_FAIL, "The radio request failed."))?
+        .map_err(|_| Error::new(E_FAIL, crate::i18n::text("The radio request failed.")))?
 }
 
 fn wide(text: &[u16]) -> String {

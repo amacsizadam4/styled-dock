@@ -11,6 +11,7 @@ a worker handles shell launches and icon extraction.
 src/
   main.rs             Startup, command-line options, and module wiring
   config.rs           TOML loading, defaults, validation, and atomic saves
+  i18n.rs             Extensible language registry, messages, and native captions
   dock/
     window.rs         Dock input, app list, dragging, and context menus
     layout.rs         Icon positions, sizing, and hit testing
@@ -41,6 +42,7 @@ src/
     system.rs         Windows shortcuts and session/power actions
 assets/topbar/        SVG status icons embedded at build time
 resources/            Windows manifest, dialog layouts, and version metadata
+resources/locales/    Embedded English and Turkish message catalogs
 examples/             Small Windows integration diagnostics
 docs/                 Usage, architecture, roadmap, and development history
 .github/workflows/    Windows build and selected deterministic tests

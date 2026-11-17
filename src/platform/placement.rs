@@ -322,7 +322,7 @@ impl AppBar {
         if unsafe { SHAppBarMessage(ABM_NEW, &mut self.data()) } == 0 {
             return Err(Error::new(
                 windows::Win32::Foundation::E_FAIL,
-                "Windows did not register the AppBar",
+                crate::i18n::text("Windows did not register the AppBar"),
             ));
         }
         Ok(())
@@ -370,7 +370,7 @@ impl AppBar {
             if unsafe { SHAppBarMessage(ABM_SETPOS, &mut data) } == 0 {
                 return Err(Error::new(
                     windows::Win32::Foundation::E_FAIL,
-                    "Windows did not reserve the AppBar's work area",
+                    crate::i18n::text("Windows did not reserve the AppBar's work area"),
                 ));
             }
             self.reserved = Some(data.rc);

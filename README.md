@@ -1,9 +1,11 @@
 # Styled Dock
 
-A macOS-inspired dock for Windows. **v1.0**
+A macOS-inspired dock for Windows. **v1.1.0**
 
 Styled Dock combines an app dock with a small status bar for sound, Wi-Fi,
 battery, time, and other Windows controls.
+
+Download the [latest Windows executable or portable ZIP](https://github.com/amacsizadam4/styled-dock/releases/latest).
 
 ## About this project
 
@@ -23,6 +25,7 @@ to be an expert to contribute.
 - Recent Downloads with file dragging, Windows right-click actions, and Show in folder.
 - Sound, network, battery, clock, and quick settings in the top bar.
 - Light/dark appearance, hover zoom, and optional auto-hide.
+- First-time setup, English/Turkish UI, and optional Windows startup.
 - Optional Windows taskbar hiding, with quit and recovery controls.
 
 ## Build and run
@@ -37,9 +40,12 @@ cargo build --release --locked
 .\target\release\styled-dock.exe
 ```
 
-To customize the defaults, copy `config.example.toml` to `config.toml` beside the
-executable or in the working directory. You can also right-click the dock and
-open Settings. Most changes use **Save and restart**.
+First launch opens setup. Choose your language and startup preferences, review
+the other pages, and click **Finish setup**. Settings and setup completion save
+locally to `%LOCALAPPDATA%\StyledDock\config.toml` on new installations. Existing
+`config.toml` files in the working directory or beside the executable keep priority.
+Right-click the dock to open Settings; **General** contains language and Windows
+startup controls. Most changes use **Save and restart**.
 
 Windows taskbar hiding is off by default. If you enable it and need to recover:
 
@@ -51,7 +57,7 @@ Windows taskbar hiding is off by default. If you enable it and need to recover:
 
 - [Using the dock and Downloads](docs/usage.md)
 - [How the code works and where to find things](docs/architecture.md)
-- [Known limitations and planned features](docs/roadmap.md)
+- [Current status, known limitations, and roadmap](docs/roadmap.md)
 - [Contributing](CONTRIBUTING.md)
 
 This is a personal Windows project, not an official Microsoft or Apple product.

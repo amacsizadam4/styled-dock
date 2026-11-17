@@ -1,6 +1,12 @@
 # Copy this to config.toml in the working directory or beside the executable.
 # Relative paths resolve next to the configuration file.
 
+[general]
+# "auto" follows Windows; "en" = English, "tr" = Turkish.
+language = "auto"
+# Finish setup in the app to save this as true. Existing settings and pins are kept.
+setup_completed = false
+
 [placement]
 # Use "primary", "cursor" (at startup), or a device name such as '\\.\DISPLAY2'.
 monitor = "primary"

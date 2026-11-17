@@ -36,23 +36,23 @@ pub enum SystemAction {
 impl SystemAction {
     pub fn label(self) -> &'static str {
         match self {
-            Self::About => "About this PC",
-            Self::Notifications => "Notification center",
-            Self::Start => "Start menu",
-            Self::Search => "Windows Search",
-            Self::TaskView => "Task View",
-            Self::ShowDesktop => "Show desktop",
-            Self::InputLanguage => "Switch input language",
-            Self::SoundOutput => "Sound output",
-            Self::ToggleWifi => "Change Wi-Fi",
-            Self::ToggleBluetooth => "Change Bluetooth",
-            Self::TaskManager => "Task Manager",
-            Self::Store => "Microsoft Store",
-            Self::Sleep => "Sleep",
-            Self::Restart => "Restart",
-            Self::Shutdown => "Shut down",
-            Self::Lock => "Lock screen",
-            Self::LogOut => "Log out",
+            Self::About => crate::i18n::text("About this PC"),
+            Self::Notifications => crate::i18n::text("Notification center"),
+            Self::Start => crate::i18n::text("Start menu"),
+            Self::Search => crate::i18n::text("Windows Search"),
+            Self::TaskView => crate::i18n::text("Task View"),
+            Self::ShowDesktop => crate::i18n::text("Show desktop"),
+            Self::InputLanguage => crate::i18n::text("Switch input language"),
+            Self::SoundOutput => crate::i18n::text("Sound output"),
+            Self::ToggleWifi => crate::i18n::text("Change Wi-Fi"),
+            Self::ToggleBluetooth => crate::i18n::text("Change Bluetooth"),
+            Self::TaskManager => crate::i18n::text("Task Manager"),
+            Self::Store => crate::i18n::text("Microsoft Store"),
+            Self::Sleep => crate::i18n::text("Sleep"),
+            Self::Restart => crate::i18n::text("Restart"),
+            Self::Shutdown => crate::i18n::text("Shut down"),
+            Self::Lock => crate::i18n::text("Lock screen"),
+            Self::LogOut => crate::i18n::text("Log out"),
         }
     }
 
@@ -91,7 +91,7 @@ impl SystemAction {
                     let _ = unsafe { SendInput(&releases, size_of::<INPUT>() as i32) };
                     return Err(Error::new(
                         windows::Win32::Foundation::E_FAIL,
-                        format!("Could not open {}", self.label()),
+                        crate::tr!("Could not open {name}", name = self.label()),
                     ));
                 }
                 Ok(())

@@ -4,8 +4,8 @@
 1 24 "resources/app.manifest"
 
 1 VERSIONINFO
-FILEVERSION 1,0,0,0
-PRODUCTVERSION 1,0,0,0
+FILEVERSION 1,1,0,0
+PRODUCTVERSION 1,1,0,0
 FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
 FILEFLAGS 0
 FILEOS VOS_NT_WINDOWS32
@@ -16,11 +16,11 @@ BEGIN
         BLOCK "040904b0"
         BEGIN
             VALUE "FileDescription", "Styled Dock - macOS-inspired dock for Windows\0"
-            VALUE "FileVersion", "1.0.0\0"
+            VALUE "FileVersion", "1.1.0\0"
             VALUE "InternalName", "styled-dock\0"
             VALUE "OriginalFilename", "styled-dock.exe\0"
             VALUE "ProductName", "Styled Dock\0"
-            VALUE "ProductVersion", "1.0\0"
+            VALUE "ProductVersion", "1.1.0\0"
         END
     END
     BLOCK "VarFileInfo"
@@ -35,9 +35,14 @@ CAPTION "Styled Dock Settings"
 FONT 9, "Segoe UI Variable Text"
 BEGIN
     LTEXT "Styled Dock", 136, 13, 16, 91, 16
-    CONTROL "", 133, "ListBox", LBS_NOTIFY | LBS_HASSTRINGS | LBS_OWNERDRAWFIXED | LBS_NOINTEGRALHEIGHT | WS_TABSTOP, 8, 42, 99, 144
+    CONTROL "", 133, "ListBox", LBS_NOTIFY | LBS_HASSTRINGS | LBS_OWNERDRAWFIXED | LBS_NOINTEGRALHEIGHT | WS_TABSTOP, 8, 42, 99, 174
     LTEXT "", 134, 129, 16, 300, 24, SS_NOPREFIX
     LTEXT "", 135, 130, 42, 298, 15, SS_NOPREFIX
+
+    LTEXT "&Language", 231, 130, 73, 95, 11
+    COMBOBOX 149, 249, 70, 179, 96, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    CONTROL "Start automatically when I sign in to Windows", 150, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 130, 112, 298, 16
+    LTEXT "Language changes apply after saving and restarting the dock.", 232, 130, 146, 298, 30
 
     LTEXT "&Display", 200, 130, 71, 95, 11
     COMBOBOX 110, 249, 68, 179, 96, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP

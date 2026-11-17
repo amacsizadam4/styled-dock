@@ -34,13 +34,16 @@ impl Drop for Instance {
 
 pub fn stop() -> Result<()> {
     unsafe {
-        let windows: Vec<_> = [
-            FindWindowW(w!("StyledDockWindow"), None),
-            FindWindowW(None, w!("Styled Dock Settings")),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
+        let mut windows: Vec<_> = FindWindowW(w!("StyledDockWindow"), None)
+            .into_iter()
+            .collect();
+        for title in crate::i18n::translations("Styled Dock Settings") {
+            if let Ok(window) = FindWindowW(None, &title) {
+                if !windows.contains(&window) {
+                    windows.push(window);
+                }
+            }
+        }
         let mut processes = std::collections::HashMap::new();
         for &window in &windows {
             let mut pid = 0;
@@ -64,7 +67,7 @@ pub fn stop() -> Result<()> {
         if timeout {
             return Err(windows::core::Error::new(
                 E_FAIL,
-                "Styled Dock did not exit within three seconds.",
+                crate::i18n::text("Styled Dock did not exit within three seconds."),
             ));
         }
     }

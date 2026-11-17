@@ -1,4 +1,6 @@
 > Archived development notes. The current public status is in [roadmap.md](roadmap.md).
+> Milestone priorities and unchecked tasks below are historical; some are now
+> implemented. Use the current roadmap to choose future work.
 
 # Styled Dock polish roadmap
 

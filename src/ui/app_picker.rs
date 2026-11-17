@@ -95,6 +95,7 @@ unsafe extern "system" fn dialog(
     };
     match message {
         WM_INITDIALOG => {
+            crate::i18n::translate_captions(&crate::i18n::captions(hwnd));
             state.filter(hwnd);
             1
         }

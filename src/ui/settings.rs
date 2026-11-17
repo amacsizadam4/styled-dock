@@ -62,9 +62,17 @@ const ID_START: i32 = 145;
 const ID_SEARCH: i32 = 146;
 const ID_DOWNLOADS: i32 = 147;
 const ID_INSTALLED: i32 = 148;
+const ID_LANGUAGE: i32 = 149;
+const ID_STARTUP: i32 = 150;
 const TBM_GETPOS: u32 = WM_USER;
 
-const PAGES: [(&str, &str, &str, &[i32]); 5] = [
+const PAGES: [(&str, &str, &str, &[i32]); 6] = [
+    (
+        "General",
+        "General Settings",
+        "Choose your language and Windows startup preferences.",
+        &[231, ID_LANGUAGE, ID_STARTUP, 232],
+    ),
     (
         "Display",
         "Display & Behavior",
@@ -155,7 +163,7 @@ const PAGES: [(&str, &str, &str, &[i32]); 5] = [
 ];
 
 // Keep a marker for every page; a missing marker must fail at compile time.
-const PAGE_MARKS: [&str; PAGES.len()] = ["▣", "◐", "▦", "⌕", "▤"];
+const PAGE_MARKS: [&str; PAGES.len()] = ["⚙", "▣", "◐", "▦", "⌕", "▤"];
 
 pub struct SettingsWindow {
     hwnd: HWND,
@@ -166,6 +174,8 @@ impl SettingsWindow {
     pub fn open(instance: HINSTANCE, owner: Option<HWND>) -> Result<Self> {
         let source = Source::open()?;
         let config = source.draft()?;
+        let original_language = config.general.language.clone();
+        crate::i18n::configure(&config.general.language);
         crate::theme::configure(config.appearance.theme);
         let mut state = Box::new(State {
             owner,
@@ -173,6 +183,9 @@ impl SettingsWindow {
             config,
             displays: Vec::new(),
             skin: None,
+            saved: false,
+            captions: Vec::new(),
+            original_language,
         });
         let hwnd = unsafe {
             InitCommonControlsEx(&INITCOMMONCONTROLSEX {
@@ -221,6 +234,17 @@ impl Drop for SettingsWindow {
 }
 
 pub fn open_standalone() -> Result<()> {
+    let _ole = crate::files::Ole::new()?;
+    show_standalone().map(|_| ())
+}
+
+/// Setup runs before the dock changes any Windows shell state. Closing it exits
+/// without marking setup complete, so it can be resumed on the next launch.
+pub fn first_time_setup() -> Result<bool> {
+    show_standalone()
+}
+
+fn show_standalone() -> Result<bool> {
     unsafe {
         let settings = SettingsWindow::open(GetModuleHandleW(None)?.into(), None)?;
         let mut message = MSG::default();
@@ -235,15 +259,18 @@ pub fn open_standalone() -> Result<()> {
                 }
             }
         }
+        return Ok(settings._state.saved);
     }
-    Ok(())
 }
 
 pub fn restart() -> Result<()> {
     let error = |error: std::io::Error| {
         Error::new(
             E_FAIL,
-            format!("Settings were saved. Reopen Styled Dock to apply them.\n\n{error}"),
+            crate::tr!(
+                "Settings were saved. Reopen Styled Dock to apply them.\n\n{error}",
+                error = error
+            ),
         )
     };
     Command::new(std::env::current_exe().map_err(error)?)
@@ -258,6 +285,9 @@ struct State {
     config: Config,
     displays: Vec<String>,
     skin: Option<SettingsSkin>,
+    saved: bool,
+    captions: Vec<(HWND, String)>,
+    original_language: String,
 }
 
 struct SettingsSkin {
@@ -392,8 +422,8 @@ impl State {
                     }
                 }
             }
-            set_text(hwnd, ID_PAGE_TITLE, title);
-            set_text(hwnd, ID_PAGE_DESCRIPTION, description);
+            set_text(hwnd, ID_PAGE_TITLE, crate::i18n::text(title));
+            set_text(hwnd, ID_PAGE_DESCRIPTION, crate::i18n::text(description));
         }
     }
 
@@ -462,7 +492,7 @@ impl State {
         };
         popup::draw_text(
             item.hDC,
-            label,
+            crate::i18n::text(label),
             &mut RECT {
                 left: bounds.left + px(38),
                 ..bounds
@@ -486,6 +516,32 @@ impl State {
     }
 
     fn fill(&mut self, hwnd: HWND) {
+        control_message(hwnd, ID_LANGUAGE, CB_RESETCONTENT, 0, 0);
+        add_text(
+            hwnd,
+            ID_LANGUAGE,
+            CB_ADDSTRING,
+            crate::i18n::text("Auto (Windows)"),
+        );
+        for language in crate::i18n::LANGUAGES {
+            add_text(hwnd, ID_LANGUAGE, CB_ADDSTRING, language.name);
+        }
+        let language = crate::i18n::LANGUAGES
+            .iter()
+            .position(|language| language.code == self.config.general.language)
+            .map_or(0, |index| index + 1);
+        control_message(hwnd, ID_LANGUAGE, CB_SETCURSEL, language, 0);
+        let _ = unsafe {
+            CheckDlgButton(
+                hwnd,
+                ID_STARTUP,
+                if crate::startup::enabled() {
+                    BST_CHECKED
+                } else {
+                    BST_UNCHECKED
+                },
+            )
+        };
         self.displays = vec!["primary".into(), "cursor".into()];
         self.displays.extend(display_names());
         let monitor = &self.config.placement.monitor;
@@ -499,8 +555,8 @@ impl State {
         control_message(hwnd, ID_DISPLAY, CB_RESETCONTENT, 0, 0);
         for (index, name) in self.displays.iter().enumerate() {
             let label = match name.as_str() {
-                "primary" => "Primary display",
-                "cursor" => "Display under cursor",
+                "primary" => crate::i18n::text("Primary display"),
+                "cursor" => crate::i18n::text("Display under cursor"),
                 _ => name.strip_prefix(r"\\.\").unwrap_or(name),
             };
             add_text(hwnd, ID_DISPLAY, CB_ADDSTRING, label);
@@ -572,6 +628,67 @@ impl State {
         self.fill_pins(hwnd, None);
     }
 
+    fn translate(&self, hwnd: HWND) {
+        crate::i18n::translate_captions(&self.captions);
+        for (id, labels) in [
+            (ID_MODE, &["Floating", "Reserve space", "Auto-hide"][..]),
+            (ID_THEME, &["Auto (Windows)", "Light", "Dark"][..]),
+        ] {
+            let selection = control_message(hwnd, id, CB_GETCURSEL, 0, 0);
+            control_message(hwnd, id, CB_RESETCONTENT, 0, 0);
+            for label in labels {
+                add_text(hwnd, id, CB_ADDSTRING, label);
+            }
+            control_message(hwnd, id, CB_SETCURSEL, selection.max(0) as usize, 0);
+        }
+        let selection = control_message(hwnd, ID_DISPLAY, CB_GETCURSEL, 0, 0);
+        control_message(hwnd, ID_DISPLAY, CB_RESETCONTENT, 0, 0);
+        for name in &self.displays {
+            let label = match name.as_str() {
+                "primary" => "Primary display",
+                "cursor" => "Display under cursor",
+                _ => name.strip_prefix(r"\\.\").unwrap_or(name),
+            };
+            add_text(hwnd, ID_DISPLAY, CB_ADDSTRING, label);
+        }
+        control_message(hwnd, ID_DISPLAY, CB_SETCURSEL, selection.max(0) as usize, 0);
+        let language = control_message(hwnd, ID_LANGUAGE, CB_GETCURSEL, 0, 0);
+        control_message(hwnd, ID_LANGUAGE, CB_DELETESTRING, 0, 0);
+        add_text(hwnd, ID_LANGUAGE, CB_INSERTSTRING, "Auto (Windows)");
+        control_message(hwnd, ID_LANGUAGE, CB_SETCURSEL, language.max(0) as usize, 0);
+        let page = control_message(hwnd, ID_PAGES, LB_GETCURSEL, 0, 0).max(0) as usize;
+        control_message(hwnd, ID_PAGES, LB_RESETCONTENT, 0, 0);
+        for (label, ..) in PAGES {
+            add_text(hwnd, ID_PAGES, LB_ADDSTRING, label);
+        }
+        control_message(hwnd, ID_PAGES, LB_SETCURSEL, page, 0);
+        Self::show_page(hwnd, page);
+        if !self.config.general.setup_completed && page == 0 {
+            set_text(
+                hwnd,
+                ID_PAGE_TITLE,
+                crate::i18n::text("Welcome to Styled Dock"),
+            );
+            set_text(
+                hwnd,
+                ID_PAGE_DESCRIPTION,
+                crate::i18n::text("Set your preferences, explore the pages, then finish setup."),
+            );
+        }
+        let key = if !self.config.general.setup_completed {
+            "&Finish setup"
+        } else if self.owner.is_none() {
+            "&Save"
+        } else {
+            "&Save and restart"
+        };
+        set_text(hwnd, 1, crate::i18n::text(key));
+        set_text(hwnd, ID_PATH, &self.source.path.display().to_string());
+        update_opacity(hwnd, ID_DOCK_OPACITY);
+        update_opacity(hwnd, ID_TOP_BAR_OPACITY);
+        let _ = unsafe { InvalidateRect(Some(hwnd), None, true) };
+    }
+
     fn fill_pins(&self, hwnd: HWND, selection: Option<usize>) {
         control_message(hwnd, ID_PINS, LB_RESETCONTENT, 0, 0);
         for pin in &self.config.pinned {
@@ -610,7 +727,7 @@ impl State {
         if pin.name.trim().is_empty() || pin.target.trim().is_empty() {
             return Err(Error::new(
                 E_INVALIDARG,
-                "Enter both a name and a path or App ID.",
+                crate::i18n::text("Enter both a name and a path or App ID."),
             ));
         }
         if self.config.pinned.iter().enumerate().any(|(i, existing)| {
@@ -618,7 +735,7 @@ impl State {
         }) {
             return Err(Error::new(
                 E_INVALIDARG,
-                "This app is already pinned. Select it to update its target.",
+                crate::i18n::text("This app is already pinned. Select it to update its target."),
             ));
         }
         if let Some(index) = index {
@@ -628,7 +745,7 @@ impl State {
             if self.config.pinned.len() >= MAX_PINS {
                 return Err(Error::new(
                     E_INVALIDARG,
-                    "The dock supports up to 32 pinned apps.",
+                    crate::i18n::text("The dock supports up to 32 pinned apps."),
                 ));
             }
             self.config.pinned.push(pin);
@@ -682,7 +799,29 @@ impl State {
         self.config.placement.hide_on_fullscreen = checked(hwnd, ID_FULLSCREEN);
         self.config.placement.hide_taskbar = checked(hwnd, ID_TASKBAR);
         self.config.appearance = appearance;
-        self.source.save(&self.config)?;
+        let language = control_message(hwnd, ID_LANGUAGE, CB_GETCURSEL, 0, 0);
+        self.config.general.language = language
+            .checked_sub(1)
+            .and_then(|index| crate::i18n::LANGUAGES.get(index as usize))
+            .map_or("auto", |language| language.code)
+            .into();
+        let previous_startup = crate::startup::enabled();
+        let startup = checked(hwnd, ID_STARTUP);
+        if previous_startup != startup {
+            crate::startup::set_enabled(startup)?;
+        }
+        let setup_completed = self.config.general.setup_completed;
+        self.config.general.setup_completed = true;
+        if let Err(error) = self.source.save(&self.config) {
+            self.config.general.setup_completed = setup_completed;
+            if previous_startup != startup {
+                if let Err(rollback) = crate::startup::set_enabled(previous_startup) {
+                    return Err(Error::new(E_FAIL, format!("{error}\n\n{rollback}")));
+                }
+            }
+            return Err(error);
+        }
+        self.saved = true;
         if let Some(owner) = self.owner {
             unsafe { PostMessageW(Some(owner), WM_SETTINGS_SAVED, WPARAM(0), LPARAM(0))? };
         }
@@ -697,6 +836,8 @@ impl State {
             ID_DEFAULTS => {
                 self.config = self.source.defaults()?;
                 self.fill(hwnd);
+                crate::i18n::configure(&self.config.general.language);
+                self.translate(hwnd);
             }
             ID_PINS => self.select(hwnd),
             ID_BROWSE => browse(hwnd)?,
@@ -765,6 +906,11 @@ fn control_message(hwnd: HWND, id: i32, message: u32, wparam: usize, lparam: isi
 }
 
 fn add_text(hwnd: HWND, id: i32, message: u32, text: &str) {
+    let text = if id == ID_PINS {
+        text
+    } else {
+        crate::i18n::text(text)
+    };
     let text = HSTRING::from(text);
     control_message(hwnd, id, message, 0, text.as_ptr() as isize);
 }
@@ -791,10 +937,15 @@ fn read_pin(hwnd: HWND) -> Pin {
 }
 
 fn read_number(hwnd: HWND, id: i32, label: &str) -> Result<u32> {
-    read_text(hwnd, id)
-        .trim()
-        .parse()
-        .map_err(|_| Error::new(E_INVALIDARG, format!("Enter a whole number for {label}.")))
+    read_text(hwnd, id).trim().parse().map_err(|_| {
+        Error::new(
+            E_INVALIDARG,
+            crate::tr!(
+                "Enter a whole number for {label}.",
+                label = crate::i18n::text(label)
+            ),
+        )
+    })
 }
 
 fn opacity(hwnd: HWND, id: i32) -> u32 {
@@ -812,10 +963,15 @@ fn update_opacity(hwnd: HWND, id: i32) {
 
 fn browse(hwnd: HWND) -> Result<()> {
     let mut path = [0u16; 4096];
+    let filter = HSTRING::from(format!(
+        "{}\0*.exe;*.lnk\0{}\0*.*\0\0",
+        crate::i18n::text("Applications and shortcuts"),
+        crate::i18n::text("All files")
+    ));
     let mut dialog = OPENFILENAMEW {
         lStructSize: size_of::<OPENFILENAMEW>() as u32,
         hwndOwner: hwnd,
-        lpstrFilter: w!("Applications and shortcuts\0*.exe;*.lnk\0All files\0*.*\0\0"),
+        lpstrFilter: PCWSTR(filter.as_ptr()),
         lpstrFile: PWSTR(path.as_mut_ptr()),
         nMaxFile: path.len() as u32,
         Flags: OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_EXPLORER,
@@ -833,7 +989,10 @@ fn browse(hwnd: HWND) -> Result<()> {
             set_text(hwnd, ID_NAME, name);
         }
     } else if unsafe { CommDlgExtendedError().0 } != 0 {
-        return Err(Error::new(E_FAIL, "Could not open the file picker."));
+        return Err(Error::new(
+            E_FAIL,
+            crate::i18n::text("Could not open the file picker."),
+        ));
     }
     Ok(())
 }
@@ -848,22 +1007,24 @@ unsafe extern "system" fn dialog_proc(
         WM_INITDIALOG => {
             unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, lparam.0) };
             let state = unsafe { &mut *(lparam.0 as *mut State) };
-            set_text(hwnd, ID_PATH, &state.source.path.display().to_string());
-            if state.owner.is_none() {
-                set_text(hwnd, 1, "&Save");
-            }
+            state.captions = crate::i18n::captions(hwnd);
             state.style(hwnd);
             for (label, ..) in PAGES {
                 add_text(hwnd, ID_PAGES, LB_ADDSTRING, label);
             }
             control_message(hwnd, ID_PAGES, LB_SETCURSEL, 0, 0);
             state.fill(hwnd);
-            State::show_page(hwnd, 0);
+            state.translate(hwnd);
             1
         }
         WM_NCDESTROY => {
             let data = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *const State;
             if let Some(state) = unsafe { data.as_ref() } {
+                crate::i18n::configure(if state.saved {
+                    &state.config.general.language
+                } else {
+                    &state.original_language
+                });
                 crate::theme::configure(state.config.appearance.theme);
                 if let Some(owner) = state.owner {
                     unsafe {
@@ -947,6 +1108,19 @@ unsafe extern "system" fn dialog_proc(
         WM_COMMAND => {
             let id = (wparam.0 & 0xffff) as i32;
             let code = (wparam.0 >> 16) as u32;
+            if id == ID_LANGUAGE && code == CBN_SELCHANGE {
+                let selection = control_message(hwnd, ID_LANGUAGE, CB_GETCURSEL, 0, 0);
+                let code = selection
+                    .checked_sub(1)
+                    .and_then(|index| crate::i18n::LANGUAGES.get(index as usize))
+                    .map_or("auto", |language| language.code);
+                crate::i18n::configure(code);
+                let data = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *mut State;
+                if let Some(state) = unsafe { data.as_mut() } {
+                    state.translate(hwnd);
+                }
+                return 1;
+            }
             if id == ID_THEME && code == CBN_SELCHANGE {
                 let mode = match control_message(hwnd, ID_THEME, CB_GETCURSEL, 0, 0) {
                     1 => crate::theme::ThemeMode::Light,
@@ -1001,7 +1175,7 @@ unsafe extern "system" fn dialog_proc(
                     MessageBoxW(
                         Some(hwnd),
                         &HSTRING::from(error.message()),
-                        w!("Styled Dock Settings"),
+                        &HSTRING::from(crate::i18n::text("Styled Dock Settings")),
                         MB_OK | MB_ICONWARNING,
                     )
                 };
@@ -1033,6 +1207,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn language_preview_preserves_edits_and_cancel_does_not_save() -> Result<()> {
+        let settings = SettingsWindow::open(unsafe { GetModuleHandleW(None)? }.into(), None)?;
+        let hwnd = settings.hwnd;
+        let data = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *mut State;
+        let original_language = unsafe { (*data).original_language.clone() };
+        let path = unsafe { (*data).source.path.clone() };
+        let original_file = std::fs::read(&path).ok();
+        set_text(hwnd, ID_DOCK_SIZE, "125");
+        set_text(hwnd, ID_NAME, "Downloads"); // User-owned names must stay intact.
+        for (selection, code, cancel) in [(2, "tr", "İptal"), (1, "en", "Cancel")] {
+            control_message(hwnd, ID_LANGUAGE, CB_SETCURSEL, selection, 0);
+            unsafe {
+                SendMessageW(
+                    hwnd,
+                    WM_COMMAND,
+                    Some(WPARAM(
+                        ID_LANGUAGE as usize | ((CBN_SELCHANGE as usize) << 16),
+                    )),
+                    None,
+                );
+            }
+            assert_eq!(read_text(hwnd, 2), cancel);
+            assert_eq!(read_text(hwnd, ID_DOCK_SIZE), "125");
+            assert_eq!(read_text(hwnd, ID_NAME), "Downloads");
+            assert_eq!(crate::i18n::text("Cancel"), cancel, "{code}");
+            for (page, (_, title, _, ids)) in PAGES.iter().enumerate() {
+                State::show_page(hwnd, page);
+                assert_eq!(read_text(hwnd, ID_PAGE_TITLE), crate::i18n::text(title));
+                assert!(unsafe { IsWindowVisible(GetDlgItem(Some(hwnd), ids[0])?) }.as_bool());
+            }
+        }
+        unsafe {
+            SendMessageW(hwnd, WM_CLOSE, None, None);
+        }
+        assert!(!settings._state.saved);
+        assert_eq!(std::fs::read(path).ok(), original_file);
+        crate::i18n::configure(&original_language);
+        Ok(())
+    }
+
+    #[test]
     fn settings_opens_and_draws_every_page() -> Result<()> {
         let settings = SettingsWindow::open(unsafe { GetModuleHandleW(None)? }.into(), None)?;
         let hwnd = settings.hwnd;
@@ -1057,7 +1272,7 @@ mod tests {
                     Some(LPARAM(sidebar.0 as isize)),
                 );
             }
-            assert_eq!(read_text(hwnd, ID_PAGE_TITLE), *title);
+            assert_eq!(read_text(hwnd, ID_PAGE_TITLE), crate::i18n::text(title));
             assert!(unsafe { IsWindowVisible(GetDlgItem(Some(hwnd), ids[0])?) }.as_bool());
             for item_state in [ODS_SELECTED, ODS_FOCUS] {
                 let item = DRAWITEMSTRUCT {

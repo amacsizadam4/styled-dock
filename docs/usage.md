@@ -3,9 +3,31 @@
 A native Rust dock and status bar for Windows. Build with `cargo build --locked`;
 the debug executable is `target/debug/styled-dock.exe`.
 
-Copy `config.example.toml` to `config.toml` in the working directory or beside the
-executable. The working-directory copy takes priority. Windows taskbar hiding is
-off on a fresh configuration; enable it in Settings after checking the dock.
+First launch opens setup before the dock changes Windows shell state. Choose
+**Auto (Windows)**, **English**, or **Türkçe**, optionally enable startup at sign-in,
+and review the display, appearance, layout, shortcuts, and pinned-app pages.
+**Finish setup** saves your choices and starts the dock. Cancel closes setup
+without saving; it appears again next time. Upgrading an older config opens setup
+once and preserves its settings and pins.
+
+New installations save to `%LOCALAPPDATA%\StyledDock\config.toml`. A `config.toml`
+in the working directory takes priority, followed by one beside the executable,
+then the local user file. You can copy `config.example.toml` to either portable
+location. Relative paths resolve beside the selected config file. The Settings
+footer shows that file's location. Windows taskbar hiding is off by default.
+
+Settings → General lets you change language and **Start automatically when I sign
+in to Windows**. Language previews immediately in Settings; **Save and restart**
+applies it across the dock and status bar. Cancel restores the previous language.
+Auto uses the Windows user locale, falling back to English for unsupported
+languages. Windows-owned menus, app names, file names, and system diagnostics keep
+their original text. More languages can be added through the shared resources;
+see [the localization guide](localization.md).
+
+Startup uses a per-user `Styled Dock.lnk` in the Windows Startup folder and needs
+no administrator rights. It targets this executable and opens from the selected
+configuration's directory. Disabling startup removes the shortcut. Keep a portable
+executable in its final location before enabling startup; re-enable it if you move it.
 
 ## Everyday controls
 

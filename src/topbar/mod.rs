@@ -83,7 +83,7 @@ impl TopBar {
             CreateWindowExW(
                 WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_NOREDIRECTIONBITMAP,
                 class.lpszClassName,
-                w!("Styled Dock Top Bar"),
+                &windows::core::HSTRING::from(crate::i18n::text("Styled Dock Top Bar")),
                 WS_POPUP,
                 0,
                 0,
@@ -112,7 +112,7 @@ impl TopBar {
             bounds: RECT::default(),
             renderer,
             dpi: 0,
-            active: "Desktop".into(),
+            active: crate::i18n::text("Desktop").into(),
             active_window: None,
             clock: String::new(),
             battery: Power::status(),
@@ -229,10 +229,12 @@ impl TopBar {
                 if length > 0 && foreground != GetShellWindow() {
                     String::from_utf16_lossy(&title[..length as usize])
                 } else {
-                    "Desktop".into()
+                    crate::i18n::text("Desktop").into()
                 }
             };
-            self.active_window = if name != "Desktop" && foreground != GetShellWindow() && pid != 0
+            self.active_window = if name != crate::i18n::text("Desktop")
+                && foreground != GetShellWindow()
+                && pid != 0
             {
                 Some((foreground, pid))
             } else {
@@ -379,9 +381,10 @@ impl TopBar {
         self.refresh_volume();
         unsafe {
             let now = GetLocalTime();
+            let locale = crate::i18n::locale();
             let mut text = [0; 64];
             let length = GetTimeFormatEx(
-                PCWSTR::null(),
+                PCWSTR(locale.as_ptr()),
                 TIME_NOSECONDS,
                 Some(&now),
                 PCWSTR::null(),
@@ -390,7 +393,7 @@ impl TopBar {
             if length > 0 {
                 let time = String::from_utf16_lossy(&text[..length as usize - 1]);
                 let length = GetDateFormatEx(
-                    PCWSTR::null(),
+                    PCWSTR(locale.as_ptr()),
                     DATE_SHORTDATE,
                     Some(&now),
                     PCWSTR::null(),
@@ -441,7 +444,7 @@ impl TopBar {
                     active: &self.active,
                     clock: &self.clock,
                     battery: self.battery,
-                    wifi_disconnected: self.network != "Wi-Fi connected",
+                    wifi_disconnected: self.network != crate::i18n::text("Wi-Fi connected"),
                     audio: self.volume,
                     hovered: self.hovered,
                     tray: &icons,
@@ -462,15 +465,15 @@ impl TopBar {
         }
         menu.divider()?;
         menu.detail(if plans.is_empty() {
-            "Power plans unavailable"
+            crate::i18n::text("Power plans unavailable")
         } else {
-            "Power plan"
+            crate::i18n::text("Power plan")
         })?;
         for (index, plan) in plans.iter().enumerate() {
             menu.option(index as u32 + 2, &plan.name, true, plan.is_active(active))?;
         }
         menu.divider()?;
-        menu.action(1, "Power and Battery Settings…")?;
+        menu.action(1, crate::i18n::text("Power and Battery Settings…"))?;
         match self.track_menu(&menu, anchor)? {
             0 => {}
             1 => return Ok(Some(Action::WindowsSettings("ms-settings:powersleep"))),
@@ -481,7 +484,11 @@ impl TopBar {
                     plan.activate().map_err(|error| {
                         Error::new(
                             error.code(),
-                            format!("Could not switch to {}.\n\n{error}", plan.name),
+                            crate::tr!(
+                                "Could not switch to {name}.\n\n{error}",
+                                name = plan.name,
+                                error = error
+                            ),
                         )
                     })?;
                 }
@@ -494,7 +501,7 @@ impl TopBar {
         let target = self.active_window;
         let mut menu = Popup::new(self.hwnd, 238)?;
         menu.heading(&self.active)?;
-        menu.option(1, "End task", target.is_some(), false)?;
+        menu.option(1, crate::i18n::text("End task"), target.is_some(), false)?;
         let choice = menu.track(
             self.hwnd,
             POINT {
@@ -513,7 +520,7 @@ impl TopBar {
 
     fn system_menu(&mut self) -> Result<Option<Action>> {
         let mut menu = Popup::new(self.hwnd, 238)?;
-        menu.heading("Windows")?;
+        menu.heading(crate::i18n::text("Windows"))?;
         let actions = [
             SystemAction::About,
             SystemAction::TaskManager,
@@ -554,19 +561,19 @@ impl TopBar {
         let enabled = self.volume.is_some();
         menu.slider(
             if self.volume.is_some_and(|(_, muted)| muted) {
-                "Volume muted"
+                crate::i18n::text("Volume muted")
             } else if enabled {
-                "Volume"
+                crate::i18n::text("Volume")
             } else {
-                "Volume unavailable"
+                crate::i18n::text("Volume unavailable")
             },
             self.volume.map_or(0.0, |(level, _)| level),
             enabled,
         )?;
         let mute = if self.volume.is_some_and(|(_, muted)| muted) {
-            "Unmute"
+            crate::i18n::text("Unmute")
         } else {
-            "Mute"
+            crate::i18n::text("Mute")
         };
         menu.option(3, mute, enabled, false)
     }
@@ -584,11 +591,11 @@ impl TopBar {
     fn volume_menu(&mut self, anchor: i32) -> Result<Option<Action>> {
         self.refresh_volume();
         let mut menu = Popup::new(self.hwnd, 280)?;
-        menu.heading("Sound")?;
-        menu.action(7, "Choose sound output…")?;
+        menu.heading(crate::i18n::text("Sound"))?;
+        menu.action(7, crate::i18n::text("Choose sound output…"))?;
         self.volume_rows(&mut menu)?;
         menu.divider()?;
-        menu.action(6, "Sound Settings…")?;
+        menu.action(6, crate::i18n::text("Sound Settings…"))?;
         let choice = self.track_menu(&menu, anchor)?;
         self.apply_volume(choice)?;
         Ok(match choice {
@@ -601,8 +608,8 @@ impl TopBar {
     fn wifi_menu(&mut self, anchor: i32) -> Result<Option<Action>> {
         panels::refresh_radios(self.hwnd);
         let mut menu = Popup::new(self.hwnd, 350)?;
-        menu.heading("Wi-Fi")?;
-        menu.toggle(1, "Wi-Fi", panels::radio_state(false))?;
+        menu.heading(crate::i18n::text("Wi-Fi"))?;
+        menu.toggle(1, crate::i18n::text("Wi-Fi"), panels::radio_state(false))?;
         menu.divider()?;
         let networks = panels::networks();
         let mut rows = Vec::new();
@@ -611,19 +618,23 @@ impl TopBar {
                 networks.truncate(5);
                 rows = networks;
                 menu.detail(if rows.is_empty() {
-                    "No networks found"
+                    crate::i18n::text("No networks found")
                 } else {
-                    "Networks"
+                    crate::i18n::text("Networks")
                 })?;
                 for (index, network) in rows.iter().enumerate() {
                     let status = if network.connected {
-                        "Connected"
+                        crate::i18n::text("Connected")
                     } else if !network.profile.is_empty() {
-                        "Saved"
+                        crate::i18n::text("Saved")
                     } else {
-                        "Available"
+                        crate::i18n::text("Available")
                     };
-                    let security = if network.secure { "Secured" } else { "Open" };
+                    let security = if network.secure {
+                        crate::i18n::text("Secured")
+                    } else {
+                        crate::i18n::text("Open")
+                    };
                     menu.tile(
                         index as u32 + 100,
                         Symbol::Wifi,
@@ -635,13 +646,13 @@ impl TopBar {
                 }
             }
             Err(_) => {
-                menu.detail("Network list unavailable in this app")?;
-                menu.detail("View networks in Windows below")?;
+                menu.detail(crate::i18n::text("Network list unavailable in this app"))?;
+                menu.detail(crate::i18n::text("View networks in Windows below"))?;
             }
         }
         menu.divider()?;
-        menu.action(2, "Other networks…")?;
-        menu.action(3, "Wi-Fi settings…")?;
+        menu.action(2, crate::i18n::text("Other networks…"))?;
+        menu.action(3, crate::i18n::text("Wi-Fi settings…"))?;
         let choice = self.track_menu(&menu, anchor)?;
         if choice >= 100
             && let Some(network) = rows.get((choice - 100) as usize)
@@ -666,28 +677,32 @@ impl TopBar {
     fn bluetooth_menu(&mut self, anchor: i32) -> Result<Option<Action>> {
         panels::refresh_radios(self.hwnd);
         let mut menu = Popup::new(self.hwnd, 350)?;
-        menu.heading("Bluetooth")?;
-        menu.toggle(1, "Bluetooth", panels::radio_state(true))?;
+        menu.heading(crate::i18n::text("Bluetooth"))?;
+        menu.toggle(1, crate::i18n::text("Bluetooth"), panels::radio_state(true))?;
         menu.divider()?;
         let devices = panels::bluetooth_devices();
         menu.detail(if devices.is_empty() {
-            "No cached Bluetooth devices"
+            crate::i18n::text("No cached Bluetooth devices")
         } else {
-            "Your devices"
+            crate::i18n::text("Your devices")
         })?;
         for (index, (name, connected)) in devices.iter().take(5).enumerate() {
             menu.tile(
                 index as u32 + 100,
                 Symbol::Bluetooth,
                 name,
-                if *connected { "Connected" } else { "Paired" },
+                if *connected {
+                    crate::i18n::text("Connected")
+                } else {
+                    crate::i18n::text("Paired")
+                },
                 true,
                 *connected,
             )?;
         }
         menu.divider()?;
-        menu.action(2, "Add or manage devices…")?;
-        menu.action(3, "Bluetooth settings…")?;
+        menu.action(2, crate::i18n::text("Add or manage devices…"))?;
+        menu.action(3, crate::i18n::text("Bluetooth settings…"))?;
         let choice = self.track_menu(&menu, anchor)?;
         Ok(match choice {
             1 => Some(Action::System(SystemAction::ToggleBluetooth)),
@@ -700,27 +715,29 @@ impl TopBar {
         let brightness = panels::Brightness::for_monitor(self.monitor);
         let screen = monitor_info(self.monitor)?.monitorInfo.rcMonitor;
         let mut menu = Popup::new(self.hwnd, 350)?;
-        menu.heading("Display")?;
-        menu.detail(&format!(
-            "{} × {} · {}% scaling",
-            screen.right - screen.left,
-            screen.bottom - screen.top,
-            (self.dpi * 100 + 48) / 96
+        menu.heading(crate::i18n::text("Display"))?;
+        menu.detail(&crate::tr!(
+            "{width} × {height} · {scale}% scaling",
+            width = screen.right - screen.left,
+            height = screen.bottom - screen.top,
+            scale = (self.dpi * 100 + 48) / 96
         ))?;
         if let Some(brightness) = &brightness {
-            menu.slider("Brightness", brightness.level, true)?;
+            menu.slider(crate::i18n::text("Brightness"), brightness.level, true)?;
         } else {
-            menu.detail("Brightness is managed by Windows or your monitor")?;
+            menu.detail(crate::i18n::text(
+                "Brightness is managed by Windows or your monitor",
+            ))?;
         }
         menu.divider()?;
         menu.tile(
             10,
             Symbol::Appearance,
-            "Color mode",
+            crate::i18n::text("Color mode"),
             if crate::theme::dark() {
-                "Dark · change in dock settings"
+                crate::i18n::text("Dark · change in dock settings")
             } else {
-                "Light · change in dock settings"
+                crate::i18n::text("Light · change in dock settings")
             },
             true,
             false,
@@ -728,13 +745,13 @@ impl TopBar {
         menu.tile(
             11,
             Symbol::Moon,
-            "Night light",
-            "Open Windows night light controls",
+            crate::i18n::text("Night light"),
+            crate::i18n::text("Open Windows night light controls"),
             true,
             false,
         )?;
         menu.divider()?;
-        menu.action(12, "Display settings…")?;
+        menu.action(12, crate::i18n::text("Display settings…"))?;
         let choice = menu.track_with_slider(
             self.hwnd,
             POINT {
@@ -763,7 +780,7 @@ impl TopBar {
 
     fn tray_menu(&mut self, anchor: i32) -> Result<Option<Action>> {
         let mut menu = Popup::new(self.hwnd, 300)?;
-        menu.heading("All app tray icons")?;
+        menu.heading(crate::i18n::text("All app tray icons"))?;
         // Do not hold a RefCell borrow while native popup loops dispatch tray IPC.
         let icons: Vec<_> = self
             .tray
@@ -776,13 +793,13 @@ impl TopBar {
             })
             .unwrap_or_default();
         if icons.is_empty() {
-            menu.detail("No app tray icons available")?;
+            menu.detail(crate::i18n::text("No app tray icons available"))?;
         }
         for (index, icon) in icons.iter().enumerate() {
             menu.action(
                 index as u32 + 1,
                 if icon.1.is_empty() {
-                    "App tray icon"
+                    crate::i18n::text("App tray icon")
                 } else {
                     &icon.1
                 },
@@ -801,8 +818,8 @@ impl TopBar {
             .and_then(|index| icons.get(index as usize))
         {
             let mut action = Popup::new(self.hwnd, 220)?;
-            action.action(1, "Open")?;
-            action.action(2, "Show app menu")?;
+            action.action(1, crate::i18n::text("Open"))?;
+            action.action(2, crate::i18n::text("Show app menu"))?;
             let point = POINT {
                 x: self.bounds.left + anchor,
                 y: self.bounds.bottom,
@@ -829,7 +846,7 @@ impl TopBar {
         self.refresh_volume();
         panels::refresh_radios(self.hwnd);
         let mut menu = Popup::new(self.hwnd, 400)?;
-        menu.heading("Quick Settings")?;
+        menu.heading(crate::i18n::text("Quick Settings"))?;
         let networks = panels::networks().unwrap_or_default();
         let network_name = networks
             .iter()
@@ -838,42 +855,54 @@ impl TopBar {
         menu.card(
             10,
             Symbol::Wifi,
-            "Wi-Fi",
+            crate::i18n::text("Wi-Fi"),
             network_name,
             panels::radio_state(false) == Some(true),
         )?;
         menu.card(
             11,
             Symbol::Bluetooth,
-            "Bluetooth",
+            crate::i18n::text("Bluetooth"),
             match panels::radio_state(true) {
-                Some(true) => "On",
-                Some(false) => "Off",
-                None => "Manage devices",
+                Some(true) => crate::i18n::text("On"),
+                Some(false) => crate::i18n::text("Off"),
+                None => crate::i18n::text("Manage devices"),
             },
             panels::radio_state(true) == Some(true),
         )?;
-        menu.card(12, Symbol::Display, "Display", "Brightness & color", false)?;
-        menu.card(13, Symbol::Moon, "Focus", "Windows focus settings", false)?;
+        menu.card(
+            12,
+            Symbol::Display,
+            crate::i18n::text("Display"),
+            crate::i18n::text("Brightness & color"),
+            false,
+        )?;
+        menu.card(
+            13,
+            Symbol::Moon,
+            crate::i18n::text("Focus"),
+            crate::i18n::text("Windows focus settings"),
+            false,
+        )?;
         menu.card(
             14,
             Symbol::Battery,
-            "Power & battery",
+            crate::i18n::text("Power & battery"),
             &self.battery.label(),
             false,
         )?;
         menu.card(
             15,
             Symbol::Settings,
-            "Dock settings",
-            "Appearance & apps",
+            crate::i18n::text("Dock settings"),
+            crate::i18n::text("Appearance & apps"),
             false,
         )?;
         menu.divider()?;
         self.volume_rows(&mut menu)?;
         menu.divider()?;
-        menu.action(6, "Sound settings…")?;
-        menu.action(90, "All app tray icons…")?;
+        menu.action(6, crate::i18n::text("Sound settings…"))?;
+        menu.action(90, crate::i18n::text("All app tray icons…"))?;
         let choice = self.track_menu(&menu, anchor)?;
         self.apply_volume(choice)?;
         match choice {

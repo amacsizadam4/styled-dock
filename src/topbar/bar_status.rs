@@ -42,11 +42,12 @@ pub enum Battery {
 impl Battery {
     pub fn label(self) -> String {
         match self {
-            Self::Present { percent, .. } => {
-                percent.map_or_else(|| "Battery".into(), |percent| format!("Battery {percent}%"))
-            }
-            Self::AcPower => "AC power".into(),
-            Self::Unavailable => "Battery unavailable".into(),
+            Self::Present { percent, .. } => percent.map_or_else(
+                || crate::i18n::text("Battery").into(),
+                |percent| crate::tr!("Battery {percent}%", percent = percent),
+            ),
+            Self::AcPower => crate::i18n::text("AC power").into(),
+            Self::Unavailable => crate::i18n::text("Battery unavailable").into(),
         }
     }
 
@@ -62,22 +63,22 @@ impl Battery {
             Self::Present {
                 charging: Some(true),
                 ..
-            } => Some("Plugged in · Charging"),
+            } => Some(crate::i18n::text("Plugged in · Charging")),
             Self::Present {
                 plugged_in: Some(true),
                 charging: Some(false),
                 ..
-            } => Some("Plugged in · Not charging"),
+            } => Some(crate::i18n::text("Plugged in · Not charging")),
             Self::Present {
                 plugged_in: Some(true),
                 ..
-            } => Some("Plugged in"),
+            } => Some(crate::i18n::text("Plugged in")),
             Self::Present {
                 plugged_in: Some(false),
                 ..
-            } => Some("On battery"),
-            Self::Present { .. } => Some("Power source unknown"),
-            Self::AcPower => Some("No battery detected"),
+            } => Some(crate::i18n::text("On battery")),
+            Self::Present { .. } => Some(crate::i18n::text("Power source unknown")),
+            Self::AcPower => Some(crate::i18n::text("No battery detected")),
             Self::Unavailable => None,
         }
     }
@@ -226,7 +227,7 @@ impl Wifi {
     pub fn label() -> &'static str {
         let mut table = null_mut();
         if unsafe { GetIfTable2(&mut table) }.0 != 0 || table.is_null() {
-            return "Wi-Fi unavailable";
+            return crate::i18n::text("Wi-Fi unavailable");
         }
         // The IP Helper table owns the full, variable-length array.
         unsafe {
@@ -236,14 +237,14 @@ impl Wifi {
             );
             let mut wifi = rows.iter().filter(|row| row.Type == IF_TYPE_IEEE80211);
             let state = match wifi.next() {
-                None => "Wi-Fi unavailable",
+                None => crate::i18n::text("Wi-Fi unavailable"),
                 Some(row)
                     if row.OperStatus == IfOperStatusUp
                         || wifi.any(|row| row.OperStatus == IfOperStatusUp) =>
                 {
-                    "Wi-Fi connected"
+                    crate::i18n::text("Wi-Fi connected")
                 }
-                Some(_) => "Wi-Fi disconnected",
+                Some(_) => crate::i18n::text("Wi-Fi disconnected"),
             };
             FreeMibTable(table.cast());
             state

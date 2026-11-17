@@ -36,7 +36,7 @@ impl TaskbarLease {
         if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
             return Err(Error::new(
                 E_FAIL,
-                "Another Styled Dock instance is managing the taskbar",
+                crate::i18n::text("Another Styled Dock instance is managing the taskbar"),
             ));
         }
         let pid = std::process::id();
@@ -61,7 +61,10 @@ impl TaskbarLease {
         };
         let worker = HANDLE(guard.worker.as_raw_handle());
         if unsafe { WaitForMultipleObjects(&[ready.0, worker], false, 3000) } != WAIT_OBJECT_0 {
-            return Err(Error::new(E_FAIL, "The taskbar watchdog did not start"));
+            return Err(Error::new(
+                E_FAIL,
+                crate::i18n::text("The taskbar watchdog did not start"),
+            ));
         }
         Ok(guard)
     }

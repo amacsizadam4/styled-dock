@@ -19,6 +19,8 @@ pub const MAX_PINS: usize = 32;
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    #[serde(default)]
+    pub general: General,
     pub pinned: Vec<Pin>,
     #[serde(default)]
     pub dock: Dock,
@@ -28,6 +30,27 @@ pub struct Config {
     pub top_bar: TopBar,
     #[serde(default)]
     pub appearance: Appearance,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct General {
+    pub setup_completed: bool,
+    #[serde(default = "automatic_language")]
+    pub language: String,
+}
+
+impl Default for General {
+    fn default() -> Self {
+        Self {
+            setup_completed: false,
+            language: automatic_language(),
+        }
+    }
+}
+
+fn automatic_language() -> String {
+    "auto".into()
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
@@ -93,34 +116,44 @@ impl Default for Appearance {
 impl Appearance {
     pub fn validate(self) -> std::result::Result<(), &'static str> {
         if !(60..=160).contains(&self.size_percent) {
-            return Err("Dock size must be between 60% and 160%.");
+            return Err(crate::i18n::text("Dock size must be between 60% and 160%."));
         }
         if !(24..=96).contains(&self.icon_size) {
-            return Err("Icon size must be between 24 and 96 px.");
+            return Err(crate::i18n::text("Icon size must be between 24 and 96 px."));
         }
         if self.icon_spacing > 32 {
-            return Err("Icon spacing must be between 0 and 32 px.");
+            return Err(crate::i18n::text(
+                "Icon spacing must be between 0 and 32 px.",
+            ));
         }
         if !(4..=40).contains(&self.edge_padding) {
-            return Err("Edge padding must be between 4 and 40 px.");
+            return Err(crate::i18n::text(
+                "Edge padding must be between 4 and 40 px.",
+            ));
         }
         if self.label_delay_ms > 3000 {
-            return Err("App label delay must be between 0 and 3000 ms.");
+            return Err(crate::i18n::text(
+                "App label delay must be between 0 and 3000 ms.",
+            ));
         }
         if self.zoom_percent > 100 {
-            return Err("Hover zoom must be between 0% and 100%.");
+            return Err(crate::i18n::text("Hover zoom must be between 0% and 100%."));
         }
         if self.animation_speed_percent != 0 && !(25..=200).contains(&self.animation_speed_percent)
         {
-            return Err(
+            return Err(crate::i18n::text(
                 "Animation speed must be 0% for instant transitions or between 25% and 200%.",
-            );
+            ));
         }
         if !(100..=3000).contains(&self.auto_hide_delay_ms) {
-            return Err("Auto-hide delay must be between 100 and 3000 ms.");
+            return Err(crate::i18n::text(
+                "Auto-hide delay must be between 100 and 3000 ms.",
+            ));
         }
         if self.dock_opacity_percent > 100 || self.top_bar_opacity_percent > 100 {
-            return Err("Background opacity must be between 0% and 100%.");
+            return Err(crate::i18n::text(
+                "Background opacity must be between 0% and 100%.",
+            ));
         }
         Ok(())
     }
@@ -173,6 +206,9 @@ pub struct Pin {
 
 pub fn load() -> Result<Config> {
     let source = Source::open()?;
+    if let Ok(draft) = source.draft() {
+        crate::i18n::configure(&draft.general.language);
+    }
     match parse(&source.text, &source.path) {
         Ok(config) => Ok(config),
         Err(error) => {
@@ -180,10 +216,11 @@ pub fn load() -> Result<Config> {
             let answer = unsafe {
                 MessageBoxW(
                     None,
-                    &HSTRING::from(format!(
-                        "The configuration could not be loaded.\n\n{error}\n\nBack up this file and reset to defaults?"
+                    &HSTRING::from(crate::tr!(
+                        "The configuration could not be loaded.\n\n{error}\n\nBack up this file and reset to defaults?",
+                        error = error
                     )),
-                    windows::core::w!("Styled Dock configuration"),
+                    &HSTRING::from(crate::i18n::text("Styled Dock configuration")),
                     MB_YESNO | MB_ICONWARNING,
                 )
             };
@@ -217,6 +254,7 @@ impl Source {
         let candidates = [
             cwd.join("config.toml"),
             executable.with_file_name("config.toml"),
+            user_directory()?.join("config.toml"),
         ];
         for path in &candidates {
             match fs::read_to_string(path) {
@@ -232,7 +270,7 @@ impl Source {
             }
         }
         Ok(Self {
-            path: candidates[1].clone(),
+            path: candidates[2].clone(),
             text: DEFAULTS.into(),
             existed: false,
         })
@@ -251,6 +289,17 @@ impl Source {
             .text
             .parse()
             .map_err(|error| invalid(&self.path, error))?;
+        if !document.contains_key("general") {
+            document["general"] = Item::Table(Table::new());
+        }
+        put(
+            &mut document["general"]["language"],
+            value(&config.general.language),
+        );
+        put(
+            &mut document["general"]["setup_completed"],
+            value(config.general.setup_completed),
+        );
         if !document.contains_key("dock") {
             document["dock"] = Item::Table(Table::new());
         }
@@ -346,7 +395,7 @@ impl Source {
         if parse(&self.text, &self.path)?.pinned != previous {
             return Err(invalid(
                 &self.path,
-                "pins changed on disk. Restart Styled Dock and try again.",
+                crate::i18n::text("pins changed on disk. Restart Styled Dock and try again."),
             ));
         }
         let mut document: DocumentMut = self
@@ -381,7 +430,7 @@ impl Source {
         if parse(&contents, &self.path)?.pinned != pins {
             return Err(invalid(
                 &self.path,
-                "a pin target could not be stored as entered",
+                crate::i18n::text("a pin target could not be stored as entered"),
             ));
         }
         self.replace(&contents)
@@ -397,7 +446,9 @@ impl Source {
             _ => {
                 return Err(invalid(
                     &self.path,
-                    "the file changed while it was being edited. Try again with the current configuration.",
+                    crate::i18n::text(
+                        "the file changed while it was being edited. Try again with the current configuration.",
+                    ),
                 ));
             }
         }
@@ -452,7 +503,21 @@ fn put(item: &mut Item, mut replacement: Item) {
     *item = replacement;
 }
 
+pub(crate) fn user_directory() -> Result<PathBuf> {
+    use windows::Win32::System::Com::CoTaskMemFree;
+    use windows::Win32::UI::Shell::{FOLDERID_LocalAppData, KF_FLAG_DEFAULT, SHGetKnownFolderPath};
+    unsafe {
+        let path = SHGetKnownFolderPath(&FOLDERID_LocalAppData, KF_FLAG_DEFAULT, None)?;
+        let result = path.to_string();
+        CoTaskMemFree(Some(path.0.cast()));
+        Ok(PathBuf::from(result?).join("StyledDock"))
+    }
+}
+
 fn replace_config(path: &Path, contents: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(io_error)?;
+    }
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -491,18 +556,21 @@ fn parse(contents: &str, path: &Path) -> Result<Config> {
         .validate()
         .map_err(|error| invalid(path, error))?;
     if config.pinned.len() > MAX_PINS {
-        return Err(invalid(path, "pinned supports at most 32 entries"));
+        return Err(invalid(
+            path,
+            crate::i18n::text("pinned supports at most 32 entries"),
+        ));
     }
     if config.placement.reserve_space && config.placement.auto_hide {
         return Err(invalid(
             path,
-            "reserve_space and auto_hide cannot both be enabled",
+            crate::i18n::text("reserve_space and auto_hide cannot both be enabled"),
         ));
     }
     if config.placement.monitor.trim().is_empty() {
         return Err(invalid(
             path,
-            "placement.monitor must name a display, primary, or cursor",
+            crate::i18n::text("placement.monitor must name a display, primary, or cursor"),
         ));
     }
     let mut targets = HashSet::new();
@@ -512,12 +580,18 @@ fn parse(contents: &str, path: &Path) -> Result<Config> {
             || pin.name.contains('\0')
             || pin.target.contains('\0')
         {
-            return Err(invalid(path, "each pin needs a nonempty name and target"));
+            return Err(invalid(
+                path,
+                crate::i18n::text("each pin needs a nonempty name and target"),
+            ));
         }
         let target = expand(&pin.target)?;
         if is_packaged(&target) {
             if target.len() == APPS_FOLDER.len() {
-                return Err(invalid(path, "shell:AppsFolder needs an application ID"));
+                return Err(invalid(
+                    path,
+                    crate::i18n::text("shell:AppsFolder needs an application ID"),
+                ));
             }
             pin.target = target;
         } else {
@@ -530,7 +604,10 @@ fn parse(contents: &str, path: &Path) -> Result<Config> {
             pin.target = target.to_string_lossy().into_owned();
         }
         if !targets.insert(pin.target.to_lowercase()) {
-            return Err(invalid(path, format!("duplicate target {}", pin.target)));
+            return Err(invalid(
+                path,
+                crate::tr!("duplicate target {target}", target = pin.target),
+            ));
         }
     }
     Ok(config)
@@ -575,6 +652,9 @@ mod tests {
     #[test]
     fn appearance_defaults_and_partial_config_are_compatible() -> Result<()> {
         let path = Path::new("config.toml");
+        let legacy = parse("pinned = []", path)?;
+        assert!(!legacy.general.setup_completed);
+        assert_eq!(legacy.general.language, "auto");
         assert_eq!(parse("pinned = []", path)?.dock, Dock::default());
         assert_eq!(
             parse("pinned = []\n[dock]\nshow_downloads = false", path)?.dock,
@@ -675,6 +755,8 @@ target = '%WINDIR%\explorer.exe'
                 existed: true,
             };
             let mut draft = source.draft()?;
+            draft.general.language = "tr".into();
+            draft.general.setup_completed = true;
             draft.appearance.icon_size = 72;
             draft.appearance.icon_spacing = 0;
             draft.appearance.edge_padding = 24;
@@ -690,6 +772,8 @@ target = '%WINDIR%\explorer.exe'
             };
             source.save(&draft)?;
             let saved = parse(&fs::read_to_string(&path).map_err(io_error)?, &path)?;
+            assert_eq!(saved.general.language, "tr");
+            assert!(saved.general.setup_completed);
             assert_eq!(saved.appearance, draft.appearance);
             assert_eq!(saved.dock, draft.dock);
             assert!(!saved.top_bar.show_tray);

@@ -410,7 +410,7 @@ impl Popup {
             let hwnd = CreateWindowExW(
                 WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_LAYERED,
                 class.lpszClassName,
-                w!("Styled Dock menu"),
+                &HSTRING::from(crate::i18n::text("Styled Dock menu")),
                 WS_POPUP | WS_CLIPCHILDREN,
                 x,
                 y,
@@ -441,7 +441,7 @@ impl Popup {
                         (w!("STATIC"), WINDOW_STYLE(SS_OWNERDRAW | SS_NOPREFIX))
                     };
                     let name = if row.checked {
-                        format!("{} (active)", row.label)
+                        crate::tr!("{label} (active)", label = row.label)
                     } else {
                         row.label.clone()
                     };
@@ -1092,24 +1092,35 @@ impl Panel<'_> {
         }
         let text = if row.kind == Kind::Slider && row.enabled {
             let level = self.slider_value.get();
-            if row.label == "Volume" {
+            if row.label == crate::i18n::text("Volume") {
                 let description = match level {
-                    0 => "Off",
-                    1..=33 => "Low",
-                    34..=66 => "Medium",
-                    _ => "High",
+                    0 => crate::i18n::text("Off"),
+                    1..=33 => crate::i18n::text("Low"),
+                    34..=66 => crate::i18n::text("Medium"),
+                    _ => crate::i18n::text("High"),
                 };
-                format!("Volume · {description} · {level}%")
+                crate::tr!(
+                    "Volume · {description} · {level}%",
+                    description = description,
+                    level = level
+                )
             } else {
                 format!("{} · {level}%", row.label)
             }
         } else {
             row.label.clone()
         };
-        if row.kind == Kind::Slider && row.label.starts_with("Volume") {
+        if row.kind == Kind::Slider
+            && [
+                crate::i18n::text("Volume"),
+                crate::i18n::text("Volume muted"),
+                crate::i18n::text("Volume unavailable"),
+            ]
+            .contains(&row.label.as_str())
+        {
             let level = VolumeLevel::from_status(row.enabled.then_some((
                 self.slider_value.get() as f32 / 100.0,
-                row.label.contains("muted"),
+                row.label == crate::i18n::text("Volume muted"),
             )));
             icons::draw_gdi(
                 item.hDC,

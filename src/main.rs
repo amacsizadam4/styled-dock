@@ -2,6 +2,7 @@
 
 mod config;
 mod dock;
+mod i18n;
 mod platform;
 mod topbar;
 mod ui;
@@ -16,6 +17,7 @@ use windows::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MessageBoxW};
 use windows::core::{HSTRING, w};
 
 fn main() -> std::process::ExitCode {
+    i18n::configure("auto");
     let mut args = std::env::args().skip(1);
     let result = match args.next().as_deref() {
         Some("--taskbar-watch") => {
@@ -31,7 +33,10 @@ fn main() -> std::process::ExitCode {
         _ => window::run(),
     };
     if let Err(error) = result {
-        let message = HSTRING::from(format!("Could not run Styled Dock.\n\n{error}"));
+        let message = HSTRING::from(crate::tr!(
+            "Could not run Styled Dock.\n\n{error}",
+            error = error
+        ));
         unsafe { MessageBoxW(None, &message, w!("Styled Dock"), MB_ICONERROR) };
         return std::process::ExitCode::FAILURE;
     }

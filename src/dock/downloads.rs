@@ -198,7 +198,7 @@ impl Fan {
                 r.left = x + size + popup::scale(10, self.dpi);
                 r.right -= popup::scale(12, self.dpi);
                 let label = if index == 0 && self.empty {
-                    "No recent files · Open Downloads"
+                    crate::i18n::text("No recent files · Open Downloads")
                 } else {
                     &item.pin.name
                 };
@@ -235,7 +235,7 @@ pub fn show(owner: HWND, anchor: POINT, appearance: Appearance) -> Result<Option
         .map_err(|error| windows::core::Error::new(E_FAIL, error.to_string()))?;
     let empty = paths.is_empty();
     let mut entries = vec![entry(Pin {
-        name: "Open Downloads".into(),
+        name: crate::i18n::text("Open Downloads").into(),
         target: folder,
     })];
     entries.extend(paths.into_iter().map(|path| {
@@ -285,7 +285,7 @@ pub fn show(owner: HWND, anchor: POINT, appearance: Appearance) -> Result<Option
         let hwnd = CreateWindowExW(
             WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_LAYERED,
             class.lpszClassName,
-            w!("Recent Downloads"),
+            &HSTRING::from(crate::i18n::text("Recent Downloads")),
             WS_POPUP,
             (anchor.x - popup::scale(30, dpi)).clamp(work.left, work.right - width),
             (anchor.y - height).clamp(work.top, work.bottom - height),

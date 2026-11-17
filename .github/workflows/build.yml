@@ -20,6 +20,8 @@ jobs:
         run: cargo +stable test --locked window::tests -- --test-threads=1
       - name: Test configuration
         run: cargo +stable test --locked config::tests -- --test-threads=1
+      - name: Test localization resources and fallback
+        run: cargo +stable test --locked i18n::tests -- --test-threads=1
       - name: Test animation
         run: cargo +stable test --locked animation::tests -- --test-threads=1
       # Native shell/work-area tests need an interactive desktop; see CONTRIBUTING.md.

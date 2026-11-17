@@ -95,7 +95,12 @@ pub fn menu(owner: HWND, path: &str, point: POINT) -> Result<()> {
                 .QueryContextMenu(menu, 0, 1, 0x6fff, CMF_NORMAL)
                 .ok()?;
             AppendMenuW(menu, MF_SEPARATOR, 0, None)?;
-            AppendMenuW(menu, MF_STRING, 0x7000, w!("Show in folder"))?;
+            AppendMenuW(
+                menu,
+                MF_STRING,
+                0x7000,
+                &HSTRING::from(crate::i18n::text("Show in folder")),
+            )?;
             let command = TrackPopupMenu(
                 menu,
                 TPM_RETURNCMD | TPM_RIGHTBUTTON,
@@ -131,7 +136,10 @@ pub fn error(owner: HWND, error: &windows::core::Error) {
     unsafe {
         MessageBoxW(
             Some(owner),
-            &HSTRING::from(format!("Could not complete the file action.\n\n{error}")),
+            &HSTRING::from(crate::tr!(
+                "Could not complete the file action.\n\n{error}",
+                error = error
+            )),
             w!("Styled Dock"),
             MB_ICONERROR,
         );

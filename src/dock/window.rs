@@ -277,8 +277,16 @@ fn dock_items(
         }
     }
     for (name, target, enabled) in [
-        ("Downloads", "shell:Downloads", dock.show_downloads),
-        ("Recycle Bin", "shell:RecycleBinFolder", true),
+        (
+            crate::i18n::text("Downloads"),
+            "shell:Downloads",
+            dock.show_downloads,
+        ),
+        (
+            crate::i18n::text("Recycle Bin"),
+            "shell:RecycleBinFolder",
+            true,
+        ),
     ] {
         if !enabled {
             continue;
@@ -294,14 +302,14 @@ fn dock_items(
     }
     let mut shortcuts = vec![
         (
-            "Start menu",
+            crate::i18n::text("Start menu"),
             "dock:Start",
             dock.show_start,
             dock.start_position,
             usize::from(dock.search_first),
         ),
         (
-            "Windows Search",
+            crate::i18n::text("Windows Search"),
             "dock:Search",
             dock.show_search,
             dock.search_position,
@@ -341,6 +349,12 @@ fn run_dock() -> Result<bool> {
     };
     let _ole = crate::files::Ole::new()?;
     let config = config::load()?;
+    crate::i18n::configure(&config.general.language);
+    if !config.general.setup_completed && !settings::first_time_setup()? {
+        return Ok(false);
+    }
+    let config = config::load()?;
+    crate::i18n::configure(&config.general.language);
     let appearance = config.appearance;
     crate::theme::configure(appearance.theme);
     let dock = DockSize::new(appearance);
@@ -436,7 +450,7 @@ fn run_dock() -> Result<bool> {
         let send = |request| {
             requests
                 .send(request)
-                .map_err(|_| Error::new(E_FAIL, "The shell worker stopped"))
+                .map_err(|_| Error::new(E_FAIL, crate::i18n::text("The shell worker stopped")))
         };
         let mut requested: HashSet<_> = items.iter().map(|item| item.pin.target.clone()).collect();
         for item in items
@@ -532,7 +546,7 @@ fn run_dock() -> Result<bool> {
                     if message.message == WM_HOTKEY {
                         if message.wParam.0 == 1 {
                             let mut menu = Popup::new(hwnd, 320)?;
-                            menu.heading("Dock apps · Ctrl+Alt+D")?;
+                            menu.heading(crate::i18n::text("Dock apps · Ctrl+Alt+D"))?;
                             for (index, item) in items.iter().enumerate() {
                                 menu.action(index as u32 + 1, &item.pin.name)?;
                             }
@@ -731,7 +745,7 @@ fn run_dock() -> Result<bool> {
                                         pins = previous;
                                         show_dock_error(
                                             hwnd,
-                                            "Could not pin the dropped apps.",
+                                            crate::i18n::text("Could not pin the dropped apps."),
                                             &error,
                                         );
                                     }
@@ -787,7 +801,9 @@ fn run_dock() -> Result<bool> {
                                         if let Err(error) = crate::startup::toggle() {
                                             show_dock_error(
                                                 hwnd,
-                                                "Could not change launch at sign-in.",
+                                                crate::i18n::text(
+                                                    "Could not change launch at sign-in.",
+                                                ),
                                                 &error,
                                             );
                                         }
@@ -828,7 +844,7 @@ fn run_dock() -> Result<bool> {
                                             items[index].pinned = !items[index].pinned;
                                             show_dock_error(
                                                 hwnd,
-                                                "Could not update pinned apps.",
+                                                crate::i18n::text("Could not update pinned apps."),
                                                 &error,
                                             );
                                         }
@@ -836,7 +852,7 @@ fn run_dock() -> Result<bool> {
                                     Ok(None) => {}
                                     Err(error) => show_dock_error(
                                         hwnd,
-                                        "Could not open the dock menu.",
+                                        crate::i18n::text("Could not open the dock menu."),
                                         &error,
                                     ),
                                 }
@@ -916,7 +932,7 @@ fn run_dock() -> Result<bool> {
                                         Event::LaunchFailed(name, error) => {
                                             show_dock_error(
                                                 hwnd,
-                                                &format!("Could not open {name}."),
+                                                &crate::tr!("Could not open {name}.", name = name),
                                                 &error,
                                             );
                                             watcher.refresh();
@@ -926,9 +942,9 @@ fn run_dock() -> Result<bool> {
                                         Event::SystemFailed(action, error) => {
                                             show_dock_error(
                                                 hwnd,
-                                                &format!(
-                                                    "Could not complete ‘{}’.",
-                                                    action.label()
+                                                &crate::tr!(
+                                                    "Could not complete ‘{action}’.",
+                                                    action = action.label()
                                                 ),
                                                 &error,
                                             );
@@ -1047,7 +1063,9 @@ fn run_dock() -> Result<bool> {
                                                 items[index].pinned = previous_pin;
                                                 show_dock_error(
                                                     hwnd,
-                                                    "Could not save the new dock order.",
+                                                    crate::i18n::text(
+                                                        "Could not save the new dock order.",
+                                                    ),
                                                     &error,
                                                 );
                                                 watcher.refresh();
@@ -1076,7 +1094,7 @@ fn run_dock() -> Result<bool> {
                                                 Ok(None) => {}
                                                 Err(error) => show_dock_error(
                                                     hwnd,
-                                                    "Could not read Downloads.",
+                                                    crate::i18n::text("Could not read Downloads."),
                                                     &error,
                                                 ),
                                             }
@@ -1189,7 +1207,7 @@ enum MenuAction {
 fn window_summary(item: &DockItem) -> String {
     let count = item.windows.len();
     if count == 0 {
-        return "Click to open".into();
+        return crate::i18n::text("Click to open").into();
     }
     let minimized = item
         .windows
@@ -1197,12 +1215,16 @@ fn window_summary(item: &DockItem) -> String {
         .filter(|&&window| unsafe { IsIconic(window).as_bool() })
         .count();
     let label = if count == 1 {
-        "1 window".into()
+        crate::i18n::text("1 window").into()
     } else {
-        format!("{count} windows")
+        crate::tr!("{count} windows", count = count)
     };
     if minimized > 0 {
-        format!("{label} · {minimized} minimized")
+        crate::tr!(
+            "{label} · {minimized} minimized",
+            label = label,
+            minimized = minimized
+        )
     } else {
         label
     }
@@ -1223,7 +1245,7 @@ fn dock_menu(
         for (index, &window) in item.windows.iter().enumerate() {
             let mut title = watcher::title(window);
             if unsafe { IsIconic(window).as_bool() } {
-                title.push_str(" (minimized)");
+                title.push_str(crate::i18n::text(" (minimized)"));
             }
             menu.action(index as u32 + 4, &title)?;
         }
@@ -1231,9 +1253,9 @@ fn dock_menu(
             menu.action(
                 0x7001,
                 if item.windows.len() == 1 {
-                    "Close window"
+                    crate::i18n::text("Close window")
                 } else {
-                    "Close all windows"
+                    crate::i18n::text("Close all windows")
                 },
             )?;
             menu.divider()?;
@@ -1241,29 +1263,37 @@ fn dock_menu(
         menu.action(
             1,
             if item.windows.is_empty() {
-                "Open"
+                crate::i18n::text("Open")
             } else {
-                "Launch Again"
+                crate::i18n::text("Launch Again")
             },
         )?;
         let label = if item.pinned {
-            "Unpin from Dock"
+            crate::i18n::text("Unpin from Dock")
         } else {
-            "Pin to Dock"
+            crate::i18n::text("Pin to Dock")
         };
         if !item.utility() {
             menu.option(2, label, item.pinned || can_pin, false)?;
         }
         menu.divider()?;
     }
-    menu.action(3, "Dock Settings…")?;
-    menu.option(0x7007, "Launch at sign-in", true, crate::startup::enabled())?;
-    menu.action(0x7002, "Task View")?;
-    menu.action(0x7003, "Show desktop")?;
-    menu.action(0x7004, "Switch input language")?;
+    menu.action(3, crate::i18n::text("Dock Settings…"))?;
+    menu.option(
+        0x7007,
+        crate::i18n::text("Launch at sign-in"),
+        true,
+        crate::startup::enabled(),
+    )?;
+    menu.action(0x7002, crate::i18n::text("Task View"))?;
+    menu.action(0x7003, crate::i18n::text("Show desktop"))?;
+    menu.action(0x7004, crate::i18n::text("Switch input language"))?;
     menu.divider()?;
-    menu.action(0x7005, "Restore Windows taskbar and quit")?;
-    menu.action(0x7006, "Quit Styled Dock")?;
+    menu.action(
+        0x7005,
+        crate::i18n::text("Restore Windows taskbar and quit"),
+    )?;
+    menu.action(0x7006, crate::i18n::text("Quit Styled Dock"))?;
     Ok(
         match (
             menu.track(hwnd, point, TPM_RIGHTBUTTON | TPM_BOTTOMALIGN),
@@ -1290,7 +1320,11 @@ fn dock_menu(
 }
 
 fn show_settings_error(hwnd: HWND, error: &Error) {
-    show_dock_error(hwnd, "Could not apply the quick setting.", error);
+    show_dock_error(
+        hwnd,
+        crate::i18n::text("Could not apply the quick setting."),
+        error,
+    );
 }
 
 fn show_dock_error(hwnd: HWND, message: &str, error: &Error) {
