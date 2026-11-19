@@ -20,6 +20,7 @@ pub const MENU_BORDER: COLORREF = rgb(0x41536f);
 const SS_OWNERDRAW: u32 = 0x000d;
 const SS_NOPREFIX: u32 = 0x0080;
 const TBM_GETPOS: u32 = WM_USER;
+const FIRST_SLIDER_ID: i32 = 0xf001;
 
 pub const PANEL: COLORREF = rgb(0xf7f8fb);
 pub const SIDEBAR: COLORREF = rgb(0xeef1f6);
@@ -158,14 +159,14 @@ enum Kind {
 impl Kind {
     fn height(self) -> i32 {
         match self {
-            Self::Heading => 32,
-            Self::Detail => 23,
-            Self::Action => 34,
-            Self::Slider => 62,
-            Self::Tile => 66,
-            Self::Card => 94,
-            Self::Toggle => 46,
-            Self::Divider => 13,
+            Self::Heading => 30,
+            Self::Detail => 22,
+            Self::Action => 30,
+            Self::Slider => 54,
+            Self::Tile => 44,
+            Self::Card => 48,
+            Self::Toggle => 36,
+            Self::Divider => 10,
         }
     }
 }
@@ -178,6 +179,7 @@ struct Row {
     checked: bool,
     symbol: Option<Symbol>,
     subtitle: String,
+    level: u32,
 }
 
 pub struct Popup {
@@ -186,7 +188,6 @@ pub struct Popup {
     dpi: i32,
     width: i32,
     rows: Vec<Row>,
-    slider_level: f32,
 }
 
 impl Popup {
@@ -197,7 +198,6 @@ impl Popup {
             dpi: (unsafe { GetDpiForWindow(owner) } as i32).max(1),
             width,
             rows: Vec::new(),
-            slider_level: 0.0,
         })
     }
 
@@ -288,13 +288,30 @@ impl Popup {
             row.kind.height()
         }
     }
+    fn slider_states(&self) -> Vec<Option<SliderState>> {
+        self.rows
+            .iter()
+            .map(|row| {
+                (row.kind == Kind::Slider).then(|| SliderState {
+                    control: Cell::default(),
+                    label: Cell::default(),
+                    value: Cell::new(row.level),
+                })
+            })
+            .collect()
+    }
     pub fn divider(&mut self) -> Result<()> {
         self.add(0, "", Kind::Divider, false, false)
     }
 
     pub fn slider(&mut self, label: &str, level: f32, enabled: bool) -> Result<()> {
-        self.slider_level = level.clamp(0.0, 1.0);
-        self.add(0, label, Kind::Slider, enabled, false)
+        self.slider_for(0, label, level, enabled)
+    }
+
+    pub fn slider_for(&mut self, id: u32, label: &str, level: f32, enabled: bool) -> Result<()> {
+        self.add(id, label, Kind::Slider, enabled, false)?;
+        self.rows.last_mut().unwrap().level = (level.clamp(0.0, 1.0) * 100.0).round() as u32;
+        Ok(())
     }
 
     pub fn track_with_slider(
@@ -303,6 +320,16 @@ impl Popup {
         point: POINT,
         alignment: TRACK_POPUP_MENU_FLAGS,
         on_slide: &dyn Fn(f32) -> Result<()>,
+    ) -> Result<u32> {
+        self.track_with_sliders(owner, point, alignment, &|_, level| on_slide(level))
+    }
+
+    pub fn track_with_sliders(
+        &self,
+        owner: HWND,
+        point: POINT,
+        alignment: TRACK_POPUP_MENU_FLAGS,
+        on_slide: &dyn Fn(u32, f32) -> Result<()>,
     ) -> Result<u32> {
         if high_contrast() {
             return Ok(self.track_native(owner, point, alignment));
@@ -348,6 +375,7 @@ impl Popup {
             checked,
             symbol: None,
             subtitle: String::new(),
+            level: 0,
         });
         Ok(())
     }
@@ -387,7 +415,7 @@ impl Popup {
         owner: HWND,
         point: POINT,
         alignment: TRACK_POPUP_MENU_FLAGS,
-        on_slide: Option<&dyn Fn(f32) -> Result<()>>,
+        on_slide: Option<&dyn Fn(u32, f32) -> Result<()>>,
     ) -> Result<u32> {
         let px = |dip| scale(dip, self.dpi);
         let monitor = unsafe { MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST) };
@@ -402,7 +430,7 @@ impl Popup {
                 let text: Vec<_> = row.label.encode_utf16().collect();
                 if unsafe { GetTextExtentPoint32W(dc, &text, &mut size).as_bool() } {
                     measured = measured.max(if row.kind == Kind::Card {
-                        size.cx * 2 + px(72)
+                        size.cx * 2 + px(110)
                     } else {
                         size.cx + px(64)
                     });
@@ -455,15 +483,13 @@ impl Popup {
             let panel = Panel {
                 popup: self,
                 fonts: [
-                    Font::new(19, self.dpi, FW_SEMIBOLD),
+                    Font::new(16, self.dpi, FW_SEMIBOLD),
                     Font::new(13, self.dpi, FW_NORMAL),
                     Font::new(14, self.dpi, FW_MEDIUM),
                 ],
                 result: Cell::new(None),
                 hot: Cell::new(HWND::default()),
-                slider: Cell::new(HWND::default()),
-                slider_label: Cell::new(HWND::default()),
-                slider_value: Cell::new((self.slider_level * 100.0).round() as u32),
+                sliders: self.slider_states(),
                 on_slide,
                 error: RefCell::new(None),
             };
@@ -616,11 +642,11 @@ impl Popup {
                                     WS_DISABLED
                                 },
                             px(13),
-                            top + px(24),
+                            top + px(21),
                             width - px(26),
-                            px(34),
+                            height - px(21),
                             Some(hwnd),
-                            Some(HMENU(0xf001usize as *mut _)),
+                            Some(HMENU((FIRST_SLIDER_ID as usize + index) as *mut _)),
                             Some(instance),
                             None,
                         )?;
@@ -635,17 +661,12 @@ impl Popup {
                             slider,
                             TBM_SETPOS,
                             Some(WPARAM(1)),
-                            Some(LPARAM(panel.slider_value.get() as isize)),
+                            Some(LPARAM(row.level as isize)),
                         );
-                        panel.slider.set(slider);
-                        SetWindowSubclass(
-                            slider,
-                            Some(slider_proc),
-                            1,
-                            (&raw const panel) as usize,
-                        )
-                        .ok()?;
-                        panel.slider_label.set(child);
+                        let state = panel.sliders[index].as_ref().unwrap();
+                        state.control.set(slider);
+                        state.label.set(child);
+                        style_slider(slider, MENU_SURFACE)?;
                         if row.enabled {
                             actions.push(slider);
                         }
@@ -669,14 +690,11 @@ impl Popup {
             }
             let _ = ShowWindow(hwnd, SW_SHOW);
             let _ = SetForegroundWindow(hwnd);
-            let _ = SetFocus(Some(
-                if !panel.slider.get().0.is_null() && IsWindowEnabled(panel.slider.get()).as_bool()
-                {
-                    panel.slider.get()
-                } else {
-                    hwnd
-                },
-            ));
+            let first_slider = panel.sliders.iter().flatten().find_map(|state| {
+                let control = state.control.get();
+                IsWindowEnabled(control).as_bool().then_some(control)
+            });
+            let _ = SetFocus(Some(first_slider.unwrap_or(hwnd)));
             let mut msg = MSG::default();
             let mut deferred = Vec::new();
             loop {
@@ -755,12 +773,12 @@ impl Popup {
                         let index = actions.iter().position(|&child| child == focused);
                         match key {
                             VK_ESCAPE => panel.result.set(Some(0)),
-                            VK_RETURN if index.is_some() && focused != panel.slider.get() => {
+                            VK_RETURN if index.is_some() && panel.slider(focused).is_none() => {
                                 panel.choose(focused);
                             }
                             VK_UP | VK_DOWN | VK_TAB | VK_HOME | VK_END
                                 if !actions.is_empty()
-                                    && (focused != panel.slider.get() || key == VK_TAB) =>
+                                    && (panel.slider(focused).is_none() || key == VK_TAB) =>
                             {
                                 let last = actions.len() - 1;
                                 let next =
@@ -837,114 +855,57 @@ impl Drop for PanelWindow {
     }
 }
 
+struct SliderState {
+    control: Cell<HWND>,
+    label: Cell<HWND>,
+    value: Cell<u32>,
+}
+
 struct Panel<'a> {
     popup: &'a Popup,
     fonts: [Font; 3],
     result: Cell<Option<u32>>,
     hot: Cell<HWND>,
-    slider: Cell<HWND>,
-    slider_label: Cell<HWND>,
-    slider_value: Cell<u32>,
-    on_slide: Option<&'a dyn Fn(f32) -> Result<()>>,
+    sliders: Vec<Option<SliderState>>,
+    on_slide: Option<&'a dyn Fn(u32, f32) -> Result<()>>,
     error: RefCell<Option<windows::core::Error>>,
 }
 
 impl Panel<'_> {
-    fn slide(&self) {
+    fn slider(&self, control: HWND) -> Option<(usize, &SliderState)> {
+        if control.is_invalid() {
+            return None;
+        }
+        let id = unsafe { GetDlgCtrlID(control) };
+        let index = usize::try_from(id - FIRST_SLIDER_ID).ok()?;
+        let state = self.sliders.get(index)?.as_ref()?;
+        (state.control.get() == control).then_some((index, state))
+    }
+
+    fn slide(&self, control: HWND) {
+        let Some((index, state)) = self.slider(control) else {
+            return;
+        };
         let value = unsafe {
-            SendMessageW(self.slider.get(), TBM_GETPOS, None, None)
+            SendMessageW(control, TBM_GETPOS, None, None)
                 .0
                 .clamp(0, 100) as u32
         };
-        if value == self.slider_value.get() {
+        if value == state.value.get() {
             return;
         }
         if let Some(on_slide) = self.on_slide
-            && let Err(error) = on_slide(value as f32 / 100.0)
+            && let Err(error) = on_slide(self.popup.rows[index].id, value as f32 / 100.0)
         {
             *self.error.borrow_mut() = Some(error);
             self.result.set(Some(0));
             return;
         }
-        self.slider_value.set(value);
+        state.value.set(value);
         unsafe {
-            let _ = InvalidateRect(Some(self.slider.get()), None, false);
+            let _ = InvalidateRect(Some(control), None, false);
+            let _ = InvalidateRect(Some(state.label.get()), None, false);
         }
-        unsafe {
-            let _ = InvalidateRect(Some(self.slider_label.get()), None, false);
-        }
-    }
-
-    fn draw_slider(&self, draw: &NMCUSTOMDRAW) -> LRESULT {
-        if high_contrast() || draw.dwDrawStage != CDDS_PREPAINT {
-            return LRESULT(CDRF_DODEFAULT as isize);
-        }
-        unsafe {
-            let slider = self.slider.get();
-            let mut bounds = RECT::default();
-            let mut channel = RECT::default();
-            let mut thumb = RECT::default();
-            let _ = GetClientRect(slider, &mut bounds);
-            SendMessageW(
-                slider,
-                TBM_GETCHANNELRECT,
-                None,
-                Some(LPARAM((&raw mut channel) as isize)),
-            );
-            SendMessageW(
-                slider,
-                TBM_GETTHUMBRECT,
-                None,
-                Some(LPARAM((&raw mut thumb) as isize)),
-            );
-            let px = |dip| scale(dip, self.popup.dpi);
-            let center = (thumb.top + thumb.bottom) / 2;
-            channel.top = center - px(2);
-            channel.bottom = center + px(2);
-            fill(draw.hdc, &bounds, MENU_SURFACE);
-            rounded(draw.hdc, &channel, MENU_BORDER, px(4));
-            let enabled = IsWindowEnabled(slider).as_bool();
-            let accent = if enabled {
-                rgb(0xa9c7ff)
-            } else {
-                rgb(0x8291a8)
-            };
-            rounded(
-                draw.hdc,
-                &RECT {
-                    right: (thumb.left + thumb.right) / 2,
-                    ..channel
-                },
-                accent,
-                px(4),
-            );
-            let x = (thumb.left + thumb.right) / 2;
-            if GetFocus() == slider {
-                rounded(
-                    draw.hdc,
-                    &RECT {
-                        left: x - px(10),
-                        right: x + px(10),
-                        top: center - px(10),
-                        bottom: center + px(10),
-                    },
-                    MENU_BORDER,
-                    px(20),
-                );
-            }
-            rounded(
-                draw.hdc,
-                &RECT {
-                    left: x - px(7),
-                    right: x + px(7),
-                    top: center - px(7),
-                    bottom: center + px(7),
-                },
-                accent,
-                px(14),
-            );
-        }
-        LRESULT(CDRF_SKIPDEFAULT as isize)
     }
 
     fn hover(&self, child: HWND) {
@@ -1021,10 +982,10 @@ impl Panel<'_> {
     }
 
     fn draw(&self, item: &DRAWITEMSTRUCT) {
-        let Some(row) = (item.CtlID as usize)
-            .checked_sub(1)
-            .and_then(|i| self.popup.rows.get(i))
-        else {
+        let Some(index) = (item.CtlID as usize).checked_sub(1) else {
+            return;
+        };
+        let Some(row) = self.popup.rows.get(index) else {
             return;
         };
         let px = |dip| scale(dip, self.popup.dpi);
@@ -1054,68 +1015,49 @@ impl Panel<'_> {
         }
         if matches!(row.kind, Kind::Tile | Kind::Card) {
             let card = row.kind == Kind::Card;
-            let surface = if highlighted {
-                rgb(0x354967)
-            } else if row.checked {
-                rgb(0x293952)
-            } else {
-                rgb(0x202e44)
-            };
-            rounded(
-                item.hDC,
-                &RECT {
-                    top: bounds.top + px(2),
-                    bottom: bounds.bottom - px(3),
-                    ..bounds
-                },
-                surface,
-                px(18),
-            );
-            let icon_left = bounds.left + px(14);
-            let icon_top = bounds.top + px(12);
-            rounded(
-                item.hDC,
-                &RECT {
-                    left: icon_left,
-                    top: icon_top,
-                    right: icon_left + px(32),
-                    bottom: icon_top + px(32),
-                },
-                if row.checked {
-                    rgb(0x235bc3)
-                } else {
-                    MENU_BORDER
-                },
-                px(12),
-            );
+            if card && !highlighted {
+                rounded(item.hDC, &bounds, rgb(0x202e44), px(14));
+            }
+            let icon_left = bounds.left + px(10);
+            let icon_top = (bounds.top + bounds.bottom - px(26)) / 2;
+            if row.checked {
+                rounded(
+                    item.hDC,
+                    &RECT {
+                        left: icon_left,
+                        top: icon_top,
+                        right: icon_left + px(26),
+                        bottom: icon_top + px(26),
+                    },
+                    rgb(0x293952),
+                    px(26),
+                );
+            }
             if let Some(symbol) = row.symbol {
                 icons::draw_gdi(
                     item.hDC,
                     symbol,
-                    icon_left + px(5),
-                    icon_top + px(5),
-                    px(22),
+                    icon_left + px(3),
+                    icon_top + px(3),
+                    px(20),
                     if row.checked {
-                        if crate::theme::dark() {
-                            rgb(0x202b3c)
-                        } else {
-                            rgb(0xffffff)
-                        }
+                        rgb(0xa9c7ff)
                     } else {
                         rgb(0xf6f8ff)
                     },
                 );
             }
-            let left = bounds.left + px(if card { 14 } else { 58 });
-            let top = bounds.top + px(if card { 49 } else { 12 });
+            let left = bounds.left + px(43);
+            let top = (bounds.top + bounds.bottom - px(34)) / 2;
+            let right = bounds.right - px(if row.checked { 28 } else { 8 });
             draw_text(
                 item.hDC,
                 &row.label,
                 &mut RECT {
                     left,
                     top,
-                    right: bounds.right - px(8),
-                    bottom: top + px(20),
+                    right,
+                    bottom: top + px(18),
                 },
                 self.fonts[2].0,
                 rgb(0xe8eefb),
@@ -1125,13 +1067,25 @@ impl Panel<'_> {
                 &row.subtitle,
                 &mut RECT {
                     left,
-                    top: top + px(20),
-                    right: bounds.right - px(8),
-                    bottom: top + px(37),
+                    top: top + px(17),
+                    right,
+                    bottom: top + px(34),
                 },
                 self.fonts[1].0,
                 rgb(0xb3c0d5),
             );
+            if row.checked {
+                draw_text(
+                    item.hDC,
+                    "✓",
+                    &mut RECT {
+                        left: bounds.right - px(22),
+                        ..bounds
+                    },
+                    self.fonts[2].0,
+                    rgb(0xa9c7ff),
+                );
+            }
             return;
         }
         if row.kind == Kind::Toggle {
@@ -1212,46 +1166,33 @@ impl Panel<'_> {
                 rgb(0xa9c7ff),
             );
         }
-        let text = if row.kind == Kind::Slider && row.enabled {
-            let level = self.slider_value.get();
-            if row.label == crate::i18n::text("Volume") {
-                let description = match level {
-                    0 => crate::i18n::text("Off"),
-                    1..=33 => crate::i18n::text("Low"),
-                    34..=66 => crate::i18n::text("Medium"),
-                    _ => crate::i18n::text("High"),
-                };
-                crate::tr!(
-                    "Volume · {description} · {level}%",
-                    description = description,
-                    level = level
-                )
-            } else {
-                format!("{} · {level}%", row.label)
-            }
+        let slider = self.sliders[index].as_ref();
+        let text = if let Some(slider) = slider.filter(|_| row.enabled) {
+            format!("{} · {}%", row.label, slider.value.get())
         } else {
             row.label.clone()
         };
-        if row.kind == Kind::Slider
-            && [
-                crate::i18n::text("Volume"),
-                crate::i18n::text("Volume muted"),
-                crate::i18n::text("Volume unavailable"),
-            ]
-            .contains(&row.label.as_str())
-        {
-            let level = VolumeLevel::from_status(row.enabled.then_some((
-                self.slider_value.get() as f32 / 100.0,
-                row.label == crate::i18n::text("Volume muted"),
-            )));
-            icons::draw_gdi(
-                item.hDC,
-                Symbol::Volume(level),
-                label.left,
-                label.top + px(2),
-                px(20),
-                ink,
-            );
+        let symbol = slider.and_then(|slider| {
+            let muted = row.label == crate::i18n::text("Volume muted");
+            if muted
+                || [
+                    crate::i18n::text("Volume"),
+                    crate::i18n::text("Volume unavailable"),
+                ]
+                .contains(&row.label.as_str())
+            {
+                Some(Symbol::Volume(VolumeLevel::from_status(
+                    row.enabled
+                        .then_some((slider.value.get() as f32 / 100.0, muted)),
+                )))
+            } else if row.label == crate::i18n::text("Brightness") {
+                Some(Symbol::Display)
+            } else {
+                None
+            }
+        });
+        if let Some(symbol) = symbol {
+            icons::draw_gdi(item.hDC, symbol, label.left, label.top + px(2), px(20), ink);
             label.left += px(28);
         }
         draw_text(item.hDC, &text, &mut label, font.0, ink);
@@ -1275,17 +1216,9 @@ unsafe extern "system" fn panel_proc(
             return DefWindowProcW(hwnd, message, wparam, lparam);
         };
         match message {
-            WM_HSCROLL if lparam.0 == panel.slider.get().0 as isize && lparam.0 != 0 => {
-                panel.slide();
+            WM_HSCROLL if lparam.0 != 0 => {
+                panel.slide(HWND(lparam.0 as *mut _));
                 LRESULT(0)
-            }
-            WM_NOTIFY if lparam.0 != 0 => {
-                let header = &*(lparam.0 as *const NMHDR);
-                if header.hwndFrom == panel.slider.get() && header.code == NM_CUSTOMDRAW {
-                    panel.draw_slider(&*(lparam.0 as *const NMCUSTOMDRAW))
-                } else {
-                    DefWindowProcW(hwnd, message, wparam, lparam)
-                }
             }
             WM_DRAWITEM => {
                 panel.draw(&*(lparam.0 as *const DRAWITEMSTRUCT));
@@ -1319,6 +1252,88 @@ unsafe extern "system" fn panel_proc(
     }
 }
 
+pub fn style_slider(hwnd: HWND, surface: COLORREF) -> Result<()> {
+    unsafe { SetWindowSubclass(hwnd, Some(slider_proc), 1, surface.0 as usize) }.ok()
+}
+
+fn draw_slider(slider: HWND, dc: HDC, surface: COLORREF) {
+    unsafe {
+        let mut bounds = RECT::default();
+        let mut channel = RECT::default();
+        let mut thumb = RECT::default();
+        let _ = GetClientRect(slider, &mut bounds);
+        SendMessageW(
+            slider,
+            TBM_GETCHANNELRECT,
+            None,
+            Some(LPARAM((&raw mut channel) as isize)),
+        );
+        SendMessageW(
+            slider,
+            TBM_GETTHUMBRECT,
+            None,
+            Some(LPARAM((&raw mut thumb) as isize)),
+        );
+        let px = |dip| scale(dip, GetDpiForWindow(slider) as i32);
+        let center = (thumb.top + thumb.bottom) / 2;
+        channel.top = center - px(3);
+        channel.bottom = center + px(3);
+        fill(dc, &bounds, surface);
+        rounded(dc, &channel, MENU_BORDER, px(6));
+        let enabled = IsWindowEnabled(slider).as_bool();
+        let accent = if enabled {
+            rgb(0xa9c7ff)
+        } else {
+            rgb(0x8291a8)
+        };
+        rounded(
+            dc,
+            &RECT {
+                right: (thumb.left + thumb.right) / 2,
+                ..channel
+            },
+            accent,
+            px(6),
+        );
+        let x = (thumb.left + thumb.right) / 2;
+        if GetFocus() == slider {
+            rounded(
+                dc,
+                &RECT {
+                    left: x - px(10),
+                    right: x + px(10),
+                    top: center - px(10),
+                    bottom: center + px(10),
+                },
+                MENU_BORDER,
+                px(20),
+            );
+        }
+        rounded(
+            dc,
+            &RECT {
+                left: x - px(7),
+                right: x + px(7),
+                top: center - px(7),
+                bottom: center + px(7),
+            },
+            MENU_BORDER,
+            px(14),
+        );
+        rounded(
+            dc,
+            &RECT {
+                left: x - px(7) + 1,
+                right: x + px(7) - 1,
+                top: center - px(7) + 1,
+                bottom: center + px(7) - 1,
+            },
+            if enabled { rgb(0xffffff) } else { accent },
+            px(14),
+        );
+    }
+}
+
 unsafe extern "system" fn slider_proc(
     hwnd: HWND,
     message: u32,
@@ -1333,12 +1348,7 @@ unsafe extern "system" fn slider_proc(
             let _ = InvalidateRect(Some(hwnd), None, false);
             let mut paint = PAINTSTRUCT::default();
             let dc = BeginPaint(hwnd, &mut paint);
-            let panel = &*(data as *const Panel<'_>);
-            panel.draw_slider(&NMCUSTOMDRAW {
-                hdc: dc,
-                dwDrawStage: CDDS_PREPAINT,
-                ..Default::default()
-            });
+            draw_slider(hwnd, dc, COLORREF(data as u32));
             let _ = EndPaint(hwnd, &paint);
             return LRESULT(0);
         }
@@ -1399,17 +1409,109 @@ mod tests {
         menu.action(7, "Settings")?;
         assert_eq!(
             (1..7).map(|i| menu.row_height(i)).collect::<Vec<_>>(),
-            [0, 94, 0, 94, 0, 94]
+            [0, 48, 0, 48, 0, 48]
         );
         assert_eq!(
             (0..menu.rows.len())
                 .map(|i| menu.row_height(i))
                 .sum::<i32>(),
-            32 + 3 * 94 + 13 + 62 + 34
+            30 + 3 * 48 + 10 + 54 + 30
         );
         assert!(menu.card_right(2));
         assert!(!menu.card_right(3));
         Ok(())
+    }
+
+    unsafe extern "system" fn adjust_sliders(owner: HWND, _: u32, timer: usize, _: u32) {
+        unsafe {
+            if let Ok(panel) = GetWindow(owner, GW_ENABLEDPOPUP)
+                && panel != owner
+            {
+                let _ = KillTimer(Some(owner), timer);
+                for (index, level) in [(0, 30), (1, 80)] {
+                    if let Ok(control) = GetDlgItem(Some(panel), FIRST_SLIDER_ID + index) {
+                        SendMessageW(control, TBM_SETPOS, Some(WPARAM(1)), Some(LPARAM(level)));
+                        SendMessageW(panel, WM_HSCROLL, None, Some(LPARAM(control.0 as isize)));
+                    }
+                }
+                let _ = PostMessageW(Some(panel), WM_CLOSE, WPARAM(0), LPARAM(0));
+            }
+        }
+    }
+
+    #[test]
+    fn sliders_report_their_own_control_id_and_value() -> Result<()> {
+        unsafe {
+            let owner = PanelWindow(CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                w!("STATIC"),
+                w!("Independent slider test"),
+                WS_OVERLAPPED,
+                0,
+                0,
+                100,
+                100,
+                None,
+                None,
+                None,
+                None,
+            )?);
+            let mut menu = Popup::new(owner.0, 280)?;
+            menu.slider_for(30, "Brightness", 0.5, true)?;
+            menu.slider_for(10, "Volume", 0.6, true)?;
+            let updates = RefCell::new(Vec::new());
+            let thread_id = GetCurrentThreadId();
+            let (done, wait) = std::sync::mpsc::channel();
+            let watchdog = std::thread::spawn(move || {
+                if wait.recv_timeout(Duration::from_secs(3)).is_err() {
+                    let _ = PostThreadMessageW(thread_id, WM_QUIT, WPARAM(0), LPARAM(0));
+                }
+            });
+            SetTimer(Some(owner.0), 124, 150, Some(adjust_sliders));
+            let result = menu.show_panel(
+                owner.0,
+                POINT { x: 100, y: 100 },
+                TPM_LEFTALIGN,
+                Some(&|id, value| {
+                    updates.borrow_mut().push((id, value));
+                    Ok(())
+                }),
+            );
+            let _ = done.send(());
+            let _ = watchdog.join();
+            let _ = KillTimer(Some(owner.0), 124);
+            let mut msg = MSG::default();
+            let _ = PeekMessageW(&mut msg, None, WM_QUIT, WM_QUIT, PM_REMOVE);
+            assert_eq!(result?, 0);
+            assert_eq!(updates.into_inner(), [(30, 0.30), (10, 0.80)]);
+            Ok(())
+        }
+    }
+
+    fn sample_controls(owner: HWND, dpi: i32) -> Result<Popup> {
+        let t = crate::i18n::text;
+        let mut menu = Popup::new(owner, 320)?;
+        menu.dpi = dpi;
+        menu.heading(t("Quick Settings"))?;
+        menu.tile(10, Symbol::Wifi, t("Wi-Fi"), t("Connected"), true, true)?;
+        menu.tile(11, Symbol::Bluetooth, t("Bluetooth"), t("On"), true, true)?;
+        menu.divider()?;
+        menu.slider_for(30, t("Brightness"), 0.48, true)?;
+        menu.slider(t("Volume"), 0.66, true)?;
+        menu.action(3, t("Mute"))?;
+        menu.divider()?;
+        menu.card(13, Symbol::Moon, t("Focus"), t("Windows"), false)?;
+        menu.card(
+            14,
+            Symbol::Battery,
+            t("Power & battery"),
+            &crate::tr!("Battery {percent}%", percent = 73),
+            false,
+        )?;
+        menu.divider()?;
+        menu.action(12, t("Display options…"))?;
+        menu.action(15, t("Dock settings"))?;
+        Ok(menu)
     }
 
     #[test]
@@ -1438,25 +1540,7 @@ mod tests {
                 None,
             )?;
             let _guard = PanelWindow(owner);
-            let mut menu = Popup::new(owner, 400)?;
-            menu.heading("Quick Settings")?;
-            menu.card(1, Symbol::Wifi, "Wi-Fi", "Connected", true)?;
-            menu.card(2, Symbol::Bluetooth, "Bluetooth", "On", true)?;
-            menu.card(3, Symbol::Display, "Display", "Brightness & color", false)?;
-            menu.card(4, Symbol::Moon, "Focus", "Windows focus settings", false)?;
-            menu.card(5, Symbol::Battery, "Power & battery", "AC power", false)?;
-            menu.card(
-                6,
-                Symbol::Settings,
-                "Dock settings",
-                "Appearance & apps",
-                false,
-            )?;
-            menu.divider()?;
-            menu.slider("Volume", 0.66, true)?;
-            menu.action(7, "Mute")?;
-            menu.divider()?;
-            menu.action(8, "Sound settings…")?;
+            let menu = sample_controls(owner, GetDpiForWindow(owner) as i32)?;
             menu.track_with_slider(owner, POINT { x: 130, y: 150 }, TPM_LEFTALIGN, &|_| Ok(()))?;
             Ok(())
         }
@@ -1502,74 +1586,22 @@ mod tests {
                 );
                 for (dpi, x) in [(96, 16), (144, 455), (192, 1101)] {
                     let px = |dip| scale(dip, dpi);
-                    let mut menu = Popup::new(HWND::default(), 400)?;
-                    menu.dpi = dpi;
-                    menu.heading(crate::i18n::text("Quick Settings"))?;
-                    menu.card(
-                        1,
-                        Symbol::Wifi,
-                        crate::i18n::text("Wi-Fi"),
-                        crate::i18n::text("Connected"),
-                        true,
-                    )?;
-                    menu.card(
-                        2,
-                        Symbol::Bluetooth,
-                        crate::i18n::text("Bluetooth"),
-                        crate::i18n::text("On"),
-                        true,
-                    )?;
-                    menu.card(
-                        3,
-                        Symbol::Display,
-                        crate::i18n::text("Display"),
-                        crate::i18n::text("Brightness & color"),
-                        false,
-                    )?;
-                    menu.card(
-                        4,
-                        Symbol::Moon,
-                        crate::i18n::text("Focus"),
-                        crate::i18n::text("Windows focus settings"),
-                        false,
-                    )?;
-                    menu.card(
-                        5,
-                        Symbol::Battery,
-                        crate::i18n::text("Power & battery"),
-                        &crate::tr!("Battery {percent}%", percent = 73),
-                        false,
-                    )?;
-                    menu.card(
-                        6,
-                        Symbol::Settings,
-                        crate::i18n::text("Dock settings"),
-                        crate::i18n::text("Appearance & apps"),
-                        false,
-                    )?;
-                    menu.divider()?;
-                    menu.toggle(91, crate::i18n::text("Mobile hotspot"), Some(false))?;
-                    menu.detail(crate::i18n::text("Off"))?;
-                    menu.action(92, crate::i18n::text("Mobile hotspot settings…"))?;
-                    menu.slider(crate::i18n::text("Volume"), 0.66, true)?;
-                    menu.action(7, crate::i18n::text("Mute"))?;
+                    let menu = sample_controls(HWND::default(), dpi)?;
                     let panel = Panel {
                         popup: &menu,
                         fonts: [
-                            Font::new(19, dpi, FW_SEMIBOLD),
+                            Font::new(16, dpi, FW_SEMIBOLD),
                             Font::new(13, dpi, FW_NORMAL),
                             Font::new(14, dpi, FW_MEDIUM),
                         ],
                         result: Cell::new(None),
                         hot: Cell::new(HWND::default()),
-                        slider: Cell::new(HWND::default()),
-                        slider_label: Cell::new(HWND::default()),
-                        slider_value: Cell::new(66),
+                        sliders: menu.slider_states(),
                         on_slide: None,
                         error: RefCell::new(None),
                     };
                     let mut y = px(10);
-                    let panel_width = px(420);
+                    let panel_width = px(340);
                     for (index, row) in menu.rows.iter().enumerate() {
                         if row.kind != Kind::Divider {
                             let column = (panel_width - px(36)) / 2;

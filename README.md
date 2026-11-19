@@ -1,6 +1,6 @@
 # Styled Dock
 
-A macOS-inspired dock for Windows. **v1.2.0**
+A macOS-inspired dock for Windows. **v1.3.0**
 
 Styled Dock combines an app dock with a small status bar for sound, Wi-Fi,
 battery, time, and other Windows controls.

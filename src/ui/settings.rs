@@ -3,7 +3,7 @@ use std::path::Path;
 use std::process::Command;
 
 use windows::Win32::Foundation::{
-    COLORREF, E_FAIL, E_INVALIDARG, HINSTANCE, HWND, LPARAM, RECT, WPARAM,
+    COLORREF, E_FAIL, E_INVALIDARG, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM,
 };
 use windows::Win32::Graphics::Dwm::{
     DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmSetWindowAttribute,
@@ -13,6 +13,8 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::Dialogs::*;
 use windows::Win32::UI::Controls::*;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
+use windows::Win32::UI::Input::KeyboardAndMouse::GetFocus;
+use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{Error, HSTRING, PCWSTR, PWSTR, Result, w};
 
@@ -78,6 +80,13 @@ const ID_STARTUP: i32 = 150;
 const ID_COPY: i32 = 152;
 const ID_ERROR: i32 = 153;
 const TBM_GETPOS: u32 = WM_USER;
+const APPEARANCE_SLIDERS: [(i32, i32, u32, u32); 4] = [
+    (ID_DOCK_SIZE, 211, 60, 160),
+    (ID_HOVER_ZOOM, 213, 0, 100),
+    (ID_DOCK_OPACITY, ID_DOCK_OPACITY_VALUE, 0, 100),
+    (ID_TOP_BAR_OPACITY, ID_TOP_BAR_OPACITY_VALUE, 0, 100),
+];
+const COMBO_BOXES: [i32; 4] = [ID_LANGUAGE, ID_DISPLAY, ID_MODE, ID_THEME];
 
 const PAGES: [(&str, &str, &str, &[i32]); 6] = [
     (
@@ -103,37 +112,31 @@ const PAGES: [(&str, &str, &str, &[i32]); 6] = [
     ),
     (
         "Appearance",
-        "Appearance & Motion",
-        "Adjust the dock, top bar, and their animations.",
+        "Appearance",
+        "Choose a color mode and adjust the dock and menu bar.",
         &[
+            222,
+            ID_THEME,
+            210,
+            ID_DOCK_SIZE,
+            211,
             212,
             ID_HOVER_ZOOM,
             213,
-            214,
-            ID_ANIMATION_SPEED,
-            215,
-            216,
-            ID_HIDE_DELAY,
-            217,
             218,
             ID_DOCK_OPACITY,
             ID_DOCK_OPACITY_VALUE,
             219,
             ID_TOP_BAR_OPACITY,
             ID_TOP_BAR_OPACITY_VALUE,
-            ID_THEME,
-            222,
             ID_LAUNCH_BOUNCE,
         ],
     ),
     (
-        "Layout",
-        "Dock Layout",
-        "Sizes use logical pixels and follow dock size and display scaling.",
+        "Advanced",
+        "Advanced Layout",
+        "Fine-tune icon spacing, sizes, and animation timing.",
         &[
-            210,
-            ID_DOCK_SIZE,
-            211,
             223,
             ID_ICON_SIZE,
             224,
@@ -146,6 +149,12 @@ const PAGES: [(&str, &str, &str, &[i32]); 6] = [
             229,
             ID_LABEL_DELAY,
             230,
+            214,
+            ID_ANIMATION_SPEED,
+            215,
+            216,
+            ID_HIDE_DELAY,
+            217,
         ],
     ),
     (
@@ -622,24 +631,24 @@ impl State {
             0,
         );
         for (id, amount) in [
-            (ID_DOCK_SIZE, appearance.size_percent),
             (ID_ICON_SIZE, appearance.icon_size),
             (ID_ICON_SPACING, appearance.icon_spacing),
             (ID_EDGE_PADDING, appearance.edge_padding),
             (ID_LABEL_DELAY, appearance.label_delay_ms),
-            (ID_HOVER_ZOOM, appearance.zoom_percent),
             (ID_ANIMATION_SPEED, appearance.animation_speed_percent),
             (ID_HIDE_DELAY, appearance.auto_hide_delay_ms),
         ] {
             set_text(hwnd, id, &amount.to_string());
         }
-        for (id, amount) in [
-            (ID_DOCK_OPACITY, appearance.dock_opacity_percent),
-            (ID_TOP_BAR_OPACITY, appearance.top_bar_opacity_percent),
-        ] {
-            control_message(hwnd, id, TBM_SETRANGE, 1, 100 << 16);
-            control_message(hwnd, id, TBM_SETPOS, 1, amount.min(100) as isize);
-            update_opacity(hwnd, id);
+        for ((id, _, min, max), amount) in APPEARANCE_SLIDERS.into_iter().zip([
+            appearance.size_percent,
+            appearance.zoom_percent,
+            appearance.dock_opacity_percent,
+            appearance.top_bar_opacity_percent,
+        ]) {
+            control_message(hwnd, id, TBM_SETRANGE, 1, ((max << 16) | min) as isize);
+            control_message(hwnd, id, TBM_SETPOS, 1, amount.clamp(min, max) as isize);
+            update_slider_value(hwnd, id);
         }
         self.fill_pins(hwnd, None);
     }
@@ -717,8 +726,9 @@ impl State {
         };
         control_message(hwnd, ID_PATH, LM_SETITEM, 0, (&raw const link) as isize);
         set_text(hwnd, ID_ERROR, "");
-        update_opacity(hwnd, ID_DOCK_OPACITY);
-        update_opacity(hwnd, ID_TOP_BAR_OPACITY);
+        for (id, ..) in APPEARANCE_SLIDERS {
+            update_slider_value(hwnd, id);
+        }
         let _ = unsafe { InvalidateRect(Some(hwnd), None, true) };
     }
 
@@ -895,6 +905,8 @@ impl State {
                 self.config = self.source.defaults()?;
                 self.fill(hwnd);
                 crate::i18n::configure(&self.config.general.language);
+                crate::theme::configure(self.config.appearance.theme);
+                self.style(hwnd);
                 self.translate(hwnd);
                 preview_controls(hwnd);
             }
@@ -960,12 +972,12 @@ fn read_appearance(hwnd: HWND, feedback: bool) -> Result<Appearance> {
             2 => crate::theme::ThemeMode::Dark,
             _ => crate::theme::ThemeMode::Auto,
         },
-        size_percent: read_number(hwnd, ID_DOCK_SIZE, "dock size", feedback)?,
+        size_percent: slider_position(hwnd, ID_DOCK_SIZE),
         icon_size: read_number(hwnd, ID_ICON_SIZE, "icon size", feedback)?,
         icon_spacing: read_number(hwnd, ID_ICON_SPACING, "icon spacing", feedback)?,
         edge_padding: read_number(hwnd, ID_EDGE_PADDING, "edge padding", feedback)?,
         label_delay_ms: read_number(hwnd, ID_LABEL_DELAY, "app label delay", feedback)?,
-        zoom_percent: read_number(hwnd, ID_HOVER_ZOOM, "hover zoom", feedback)?,
+        zoom_percent: slider_position(hwnd, ID_HOVER_ZOOM),
         animation_speed_percent: read_number(
             hwnd,
             ID_ANIMATION_SPEED,
@@ -973,8 +985,8 @@ fn read_appearance(hwnd: HWND, feedback: bool) -> Result<Appearance> {
             feedback,
         )?,
         auto_hide_delay_ms: read_number(hwnd, ID_HIDE_DELAY, "auto-hide delay", feedback)?,
-        dock_opacity_percent: opacity(hwnd, ID_DOCK_OPACITY),
-        top_bar_opacity_percent: opacity(hwnd, ID_TOP_BAR_OPACITY),
+        dock_opacity_percent: slider_position(hwnd, ID_DOCK_OPACITY),
+        top_bar_opacity_percent: slider_position(hwnd, ID_TOP_BAR_OPACITY),
         launch_bounce: checked(hwnd, ID_LAUNCH_BOUNCE),
     };
     if let Err(error) = appearance.validate() {
@@ -1094,17 +1106,17 @@ fn read_number(hwnd: HWND, id: i32, label: &str, feedback: bool) -> Result<u32> 
     })
 }
 
-fn opacity(hwnd: HWND, id: i32) -> u32 {
+fn slider_position(hwnd: HWND, id: i32) -> u32 {
     control_message(hwnd, id, TBM_GETPOS, 0, 0) as u32
 }
 
-fn update_opacity(hwnd: HWND, id: i32) {
-    let value = if id == ID_DOCK_OPACITY {
-        ID_DOCK_OPACITY_VALUE
-    } else {
-        ID_TOP_BAR_OPACITY_VALUE
-    };
-    set_text(hwnd, value, &format!("{}%", opacity(hwnd, id)));
+fn update_slider_value(hwnd: HWND, id: i32) {
+    if let Some((_, label, ..)) = APPEARANCE_SLIDERS
+        .iter()
+        .find(|&&(control, ..)| control == id)
+    {
+        set_text(hwnd, *label, &format!("{}%", slider_position(hwnd, id)));
+    }
 }
 
 fn browse(hwnd: HWND) -> Result<()> {
@@ -1157,6 +1169,16 @@ unsafe extern "system" fn dialog_proc(
             state.style(hwnd);
             for (label, ..) in PAGES {
                 add_text(hwnd, ID_PAGES, LB_ADDSTRING, label);
+            }
+            for (id, ..) in APPEARANCE_SLIDERS {
+                if let Ok(control) = unsafe { GetDlgItem(Some(hwnd), id) } {
+                    let _ = popup::style_slider(control, PANEL);
+                }
+            }
+            for id in COMBO_BOXES {
+                if let Ok(control) = unsafe { GetDlgItem(Some(hwnd), id) } {
+                    let _ = unsafe { SetWindowSubclass(control, Some(combo_proc), 1, 0) };
+                }
             }
             control_message(hwnd, ID_PAGES, LB_SETCURSEL, 0, 0);
             state.fill(hwnd);
@@ -1222,9 +1244,6 @@ unsafe extern "system" fn dialog_proc(
                 return skin.panel.0 as isize;
             }
             let id = unsafe { GetDlgCtrlID(HWND(lparam.0 as *mut _)) };
-            if message == WM_CTLCOLORLISTBOX && id != ID_PAGES {
-                return 0;
-            }
             let sidebar = matches!(id, ID_BRAND | ID_PAGES);
             unsafe {
                 SetBkColor(dc, popup::adapted(if sidebar { SIDEBAR } else { PANEL }));
@@ -1232,7 +1251,10 @@ unsafe extern "system" fn dialog_proc(
                     dc,
                     popup::adapted(if id == ID_PATH {
                         ACCENT
-                    } else if matches!(id, ID_PAGE_DESCRIPTION | 211 | 213 | 215 | 217) {
+                    } else if matches!(
+                        id,
+                        ID_PAGE_DESCRIPTION | 211 | 213 | 215 | 217 | 224 | 226 | 228 | 230
+                    ) {
                         MUTED
                     } else {
                         INK
@@ -1264,8 +1286,11 @@ unsafe extern "system" fn dialog_proc(
         }
         WM_HSCROLL if lparam.0 != 0 => {
             let id = unsafe { GetDlgCtrlID(HWND(lparam.0 as *mut _)) };
-            if matches!(id, ID_DOCK_OPACITY | ID_TOP_BAR_OPACITY) {
-                update_opacity(hwnd, id);
+            if APPEARANCE_SLIDERS
+                .iter()
+                .any(|&(control, ..)| control == id)
+            {
+                update_slider_value(hwnd, id);
                 preview_controls(hwnd);
             }
             0
@@ -1276,9 +1301,7 @@ unsafe extern "system" fn dialog_proc(
             if code == EN_CHANGE
                 && matches!(
                     id,
-                    ID_DOCK_SIZE
-                        | ID_HOVER_ZOOM
-                        | ID_ANIMATION_SPEED
+                    ID_ANIMATION_SPEED
                         | ID_HIDE_DELAY
                         | ID_ICON_SIZE
                         | ID_ICON_SPACING
@@ -1392,6 +1415,90 @@ unsafe extern "system" fn theme_control(hwnd: HWND, _: LPARAM) -> windows::core:
     true.into()
 }
 
+unsafe extern "system" fn combo_proc(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _: usize,
+    _: usize,
+) -> LRESULT {
+    unsafe {
+        match message {
+            WM_PAINT if !popup::high_contrast() => {
+                let mut paint = PAINTSTRUCT::default();
+                let dc = BeginPaint(hwnd, &mut paint);
+                paint_combo(hwnd, dc);
+                let _ = EndPaint(hwnd, &paint);
+                return LRESULT(0);
+            }
+            WM_PRINTCLIENT if !popup::high_contrast() => {
+                paint_combo(hwnd, HDC(wparam.0 as *mut _));
+                return LRESULT(0);
+            }
+            WM_ERASEBKGND if !popup::high_contrast() => return LRESULT(1),
+            _ => {}
+        }
+        let result = DefSubclassProc(hwnd, message, wparam, lparam);
+        if matches!(
+            message,
+            CB_SETCURSEL | WM_SETFOCUS | WM_KILLFOCUS | WM_ENABLE
+        ) {
+            let _ = InvalidateRect(Some(hwnd), None, false);
+        }
+        result
+    }
+}
+
+fn paint_combo(hwnd: HWND, dc: HDC) {
+    unsafe {
+        let mut bounds = RECT::default();
+        if GetClientRect(hwnd, &mut bounds).is_err() {
+            return;
+        }
+        let dpi = GetDpiForWindow(hwnd) as i32;
+        let px = |dip| popup::scale(dip, dpi);
+        let focused = GetFocus() == hwnd;
+        popup::fill(dc, &bounds, PANEL);
+        popup::rounded(dc, &bounds, if focused { ACCENT } else { LINE }, px(10));
+        popup::rounded(
+            dc,
+            &RECT {
+                left: bounds.left + 1,
+                top: bounds.top + 1,
+                right: bounds.right - 1,
+                bottom: bounds.bottom - 1,
+            },
+            SIDEBAR,
+            px(9),
+        );
+        let mut text = [0; 256];
+        let len = GetWindowTextW(hwnd, &mut text) as usize;
+        let font = HFONT(SendMessageW(hwnd, WM_GETFONT, None, None).0 as *mut _);
+        popup::draw_text(
+            dc,
+            &String::from_utf16_lossy(&text[..len]),
+            &mut RECT {
+                left: bounds.left + px(8),
+                right: bounds.right - px(25),
+                ..bounds
+            },
+            font,
+            INK,
+        );
+        popup::draw_text(
+            dc,
+            "⌄",
+            &mut RECT {
+                left: bounds.right - px(19),
+                ..bounds
+            },
+            font,
+            MUTED,
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1418,9 +1525,26 @@ mod tests {
             SettingsWindow::open(unsafe { GetModuleHandleW(None)? }.into(), Some(owner))?;
         let hwnd = settings.hwnd;
         let original = settings._state.original_appearance;
+        let original_dark = crate::theme::dark();
         take_preview();
-        set_text(hwnd, ID_DOCK_SIZE, "140");
-        set_text(hwnd, ID_HOVER_ZOOM, "80");
+        control_message(
+            hwnd,
+            ID_THEME,
+            CB_SETCURSEL,
+            if original_dark { 1 } else { 2 },
+            0,
+        );
+        unsafe {
+            SendMessageW(
+                hwnd,
+                WM_COMMAND,
+                Some(WPARAM(ID_THEME as usize | ((CBN_SELCHANGE as usize) << 16))),
+                None,
+            );
+        }
+        assert_ne!(crate::theme::dark(), original_dark);
+        control_message(hwnd, ID_DOCK_SIZE, TBM_SETPOS, 1, 140);
+        control_message(hwnd, ID_HOVER_ZOOM, TBM_SETPOS, 1, 80);
         control_message(hwnd, ID_DOCK_OPACITY, TBM_SETPOS, 1, 50);
         control_message(hwnd, ID_TOP_BAR_OPACITY, TBM_SETPOS, 1, 60);
         preview_controls(hwnd);
@@ -1444,6 +1568,7 @@ mod tests {
             SendMessageW(hwnd, WM_CLOSE, None, None);
         }
         assert_eq!(take_preview(), Some(original));
+        assert_eq!(crate::theme::dark(), original_dark);
         let _ = unsafe { DestroyWindow(owner) };
         Ok(())
     }
@@ -1456,7 +1581,7 @@ mod tests {
         let original_language = unsafe { (*data).original_language.clone() };
         let path = unsafe { (*data).source.path.clone() };
         let original_file = std::fs::read(&path).ok();
-        set_text(hwnd, ID_DOCK_SIZE, "125");
+        control_message(hwnd, ID_DOCK_SIZE, TBM_SETPOS, 1, 125);
         set_text(hwnd, ID_NAME, "Downloads"); // User-owned names must stay intact.
         for (selection, code, cancel) in [(2, "tr", "İptal"), (1, "en", "Cancel")] {
             control_message(hwnd, ID_LANGUAGE, CB_SETCURSEL, selection, 0);
@@ -1471,7 +1596,7 @@ mod tests {
                 );
             }
             assert_eq!(read_text(hwnd, 2), cancel);
-            assert_eq!(read_text(hwnd, ID_DOCK_SIZE), "125");
+            assert_eq!(slider_position(hwnd, ID_DOCK_SIZE), 125);
             assert_eq!(read_text(hwnd, ID_NAME), "Downloads");
             assert_eq!(crate::i18n::text("Cancel"), cancel, "{code}");
             for (page, (_, title, _, ids)) in PAGES.iter().enumerate() {

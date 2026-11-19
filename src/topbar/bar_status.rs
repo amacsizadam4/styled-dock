@@ -18,7 +18,7 @@ use windows::Win32::System::SystemServices::{
 use windows::Win32::UI::WindowsAndMessaging::{DEVICE_NOTIFY_WINDOW_HANDLE, PostMessageW, WM_APP};
 use windows::core::{Error, GUID, PCWSTR, Result, implement};
 
-pub const WM_WIFI: u32 = WM_APP + 9;
+pub const WM_NETWORK: u32 = WM_APP + 9;
 pub const WM_AUDIO: u32 = WM_APP + 10;
 pub const WM_AUDIO_DEVICE: u32 = WM_APP + 11;
 
@@ -207,62 +207,252 @@ impl Drop for Power {
     }
 }
 
-pub struct Wifi(HANDLE);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Connection {
+    Wifi,
+    Ethernet,
+    Cellular,
+    Other,
+}
 
-impl Wifi {
-    pub fn new(hwnd: HWND) -> Option<Self> {
-        let mut subscription = HANDLE::default();
-        let result = unsafe {
-            NotifyIpInterfaceChange(
-                AF_UNSPEC,
-                Some(network_changed),
-                Some(hwnd.0.cast_const()),
-                false,
-                &mut subscription,
-            )
-        };
-        (result.0 == 0).then_some(Self(subscription))
+impl Connection {
+    pub fn name(self) -> &'static str {
+        crate::i18n::text(match self {
+            Self::Wifi => "Wi-Fi",
+            Self::Ethernet => "Ethernet",
+            Self::Cellular => "Cellular",
+            Self::Other => "Network",
+        })
     }
 
-    pub fn label() -> &'static str {
+    pub fn symbol(self) -> crate::icons::Symbol {
+        use crate::icons::Symbol;
+        match self {
+            Self::Wifi => Symbol::Wifi,
+            Self::Ethernet => Symbol::Ethernet,
+            Self::Cellular => Symbol::Cellular,
+            Self::Other => Symbol::Network,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub struct NetworkStatus {
+    // None means no matching adapter, false means present with no active link.
+    pub wifi: Option<bool>,
+    pub ethernet: Option<bool>,
+    pub cellular: Option<bool>,
+    other: bool,
+    available: bool,
+}
+
+impl NetworkStatus {
+    pub fn primary(self) -> Option<Connection> {
+        if self.ethernet == Some(true) {
+            Some(Connection::Ethernet)
+        } else if self.wifi == Some(true) {
+            Some(Connection::Wifi)
+        } else if self.cellular == Some(true) {
+            Some(Connection::Cellular)
+        } else {
+            self.other.then_some(Connection::Other)
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        crate::i18n::text(match self.primary() {
+            Some(Connection::Wifi) => "Wi-Fi connected",
+            Some(Connection::Ethernet) => "Ethernet connected",
+            Some(Connection::Cellular) => "Cellular connected",
+            Some(Connection::Other) => "Network connected",
+            None if self.available => "No network connection",
+            None => "Network status unavailable",
+        })
+    }
+
+    fn from_interfaces(rows: &[MIB_IF_ROW2], default_routes: &[u32]) -> Self {
+        let mut status = Self {
+            available: true,
+            ..Self::default()
+        };
+        for row in rows {
+            let up = row.OperStatus == IfOperStatusUp;
+            // HardwareInterface is bit 0 of InterfaceAndOperStatusFlags.
+            let hardware = row.InterfaceAndOperStatusFlags._bitfield & 1 != 0;
+            let link = match row.Type {
+                IF_TYPE_IEEE80211 if hardware => &mut status.wifi,
+                IF_TYPE_ETHERNET_CSMACD if hardware => &mut status.ethernet,
+                IF_TYPE_WWANPP | IF_TYPE_WWANPP2 => &mut status.cellular,
+                IF_TYPE_SOFTWARE_LOOPBACK => continue,
+                _ => {
+                    // An always-up virtual adapter alone does not indicate connectivity.
+                    status.other |= up && default_routes.contains(&row.InterfaceIndex);
+                    continue;
+                }
+            };
+            *link = Some(link.unwrap_or(false) || up);
+        }
+        status
+    }
+
+    pub fn read() -> Self {
         let mut table = null_mut();
         if unsafe { GetIfTable2(&mut table) }.0 != 0 || table.is_null() {
-            return crate::i18n::text("Wi-Fi unavailable");
+            return Self::default();
         }
-        // The IP Helper table owns the full, variable-length array.
         unsafe {
             let rows = std::slice::from_raw_parts(
                 (&raw const (*table).Table).cast::<MIB_IF_ROW2>(),
                 (*table).NumEntries as usize,
             );
-            let mut wifi = rows.iter().filter(|row| row.Type == IF_TYPE_IEEE80211);
-            let state = match wifi.next() {
-                None => crate::i18n::text("Wi-Fi unavailable"),
-                Some(row)
-                    if row.OperStatus == IfOperStatusUp
-                        || wifi.any(|row| row.OperStatus == IfOperStatusUp) =>
-                {
-                    crate::i18n::text("Wi-Fi connected")
-                }
-                Some(_) => crate::i18n::text("Wi-Fi disconnected"),
-            };
+            let status = Self::from_interfaces(rows, &default_route_interfaces());
             FreeMibTable(table.cast());
-            state
+            status
         }
     }
 }
 
-unsafe extern "system" fn network_changed(
+fn default_route_interfaces() -> Vec<u32> {
+    let mut table = null_mut();
+    if unsafe { GetIpForwardTable2(AF_UNSPEC, &mut table) }.0 != 0 || table.is_null() {
+        return Vec::new();
+    }
+    unsafe {
+        let routes = std::slice::from_raw_parts(
+            (&raw const (*table).Table).cast::<MIB_IPFORWARD_ROW2>(),
+            (*table).NumEntries as usize,
+        );
+        let interfaces = routes
+            .iter()
+            .filter(|route| route.DestinationPrefix.PrefixLength == 0 && route.ValidLifetime != 0)
+            .map(|route| route.InterfaceIndex)
+            .collect();
+        FreeMibTable(table.cast());
+        interfaces
+    }
+}
+
+pub struct NetworkChanges(Vec<HANDLE>);
+
+impl NetworkChanges {
+    pub fn new(hwnd: HWND) -> Option<Self> {
+        let mut interfaces = HANDLE::default();
+        let mut routes = HANDLE::default();
+        let subscriptions = unsafe {
+            [
+                NotifyIpInterfaceChange(
+                    AF_UNSPEC,
+                    Some(interface_changed),
+                    Some(hwnd.0.cast_const()),
+                    false,
+                    &mut interfaces,
+                )
+                .is_ok()
+                .then_some(interfaces),
+                NotifyRouteChange2(
+                    AF_UNSPEC,
+                    Some(route_changed),
+                    hwnd.0.cast_const(),
+                    false,
+                    &mut routes,
+                )
+                .is_ok()
+                .then_some(routes),
+            ]
+        }
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+        (!subscriptions.is_empty()).then_some(Self(subscriptions))
+    }
+}
+
+unsafe extern "system" fn interface_changed(
     context: *const c_void,
     _: *const MIB_IPINTERFACE_ROW,
     _: MIB_NOTIFICATION_TYPE,
 ) {
-    notify(HWND(context.cast_mut()), WM_WIFI);
+    notify(HWND(context.cast_mut()), WM_NETWORK);
 }
 
-impl Drop for Wifi {
+unsafe extern "system" fn route_changed(
+    context: *const c_void,
+    _: *const MIB_IPFORWARD_ROW2,
+    _: MIB_NOTIFICATION_TYPE,
+) {
+    notify(HWND(context.cast_mut()), WM_NETWORK);
+}
+
+impl Drop for NetworkChanges {
     fn drop(&mut self) {
-        let _ = unsafe { CancelMibChangeNotify2(self.0) };
+        for subscription in self.0.drain(..) {
+            let _ = unsafe { CancelMibChangeNotify2(subscription) };
+        }
+    }
+}
+
+#[cfg(test)]
+mod network_tests {
+    use super::*;
+
+    fn interface(index: u32, kind: u32, hardware: bool, up: bool) -> MIB_IF_ROW2 {
+        MIB_IF_ROW2 {
+            InterfaceIndex: index,
+            Type: kind,
+            InterfaceAndOperStatusFlags: MIB_IF_ROW2_0 {
+                _bitfield: u8::from(hardware),
+            },
+            OperStatus: if up {
+                IfOperStatusUp
+            } else {
+                windows::Win32::NetworkManagement::Ndis::IfOperStatusDown
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn wired_wifi_and_cellular_links_are_reported_independently() {
+        let radios = [
+            interface(1, IF_TYPE_IEEE80211, true, false),
+            interface(2, IF_TYPE_IEEE80211, true, true),
+            interface(3, IF_TYPE_WWANPP, true, true),
+        ];
+        let status = NetworkStatus::from_interfaces(&radios, &[]);
+        assert_eq!(status.primary(), Some(Connection::Wifi));
+        assert_eq!(status.wifi, Some(true));
+        assert_eq!(status.cellular, Some(true));
+        let status = NetworkStatus::from_interfaces(
+            &[
+                radios[0],
+                radios[1],
+                radios[2],
+                interface(4, IF_TYPE_ETHERNET_CSMACD, true, true),
+            ],
+            &[],
+        );
+        assert_eq!(status.primary(), Some(Connection::Ethernet));
+        assert_eq!(status.wifi, Some(true));
+        assert_eq!(
+            NetworkStatus::from_interfaces(&radios[2..], &[]).primary(),
+            Some(Connection::Cellular)
+        );
+    }
+
+    #[test]
+    fn virtual_adapters_without_a_default_route_do_not_look_connected() {
+        let rows = [
+            interface(1, IF_TYPE_ETHERNET_CSMACD, true, false),
+            interface(2, IF_TYPE_ETHERNET_CSMACD, false, true),
+            interface(3, IF_TYPE_SOFTWARE_LOOPBACK, false, true),
+        ];
+        let status = NetworkStatus::from_interfaces(&rows, &[3]);
+        assert_eq!(status.primary(), None);
+        assert_eq!(status.ethernet, Some(false));
+        assert_eq!(
+            NetworkStatus::from_interfaces(&rows, &[2]).primary(),
+            Some(Connection::Other)
+        );
     }
 }
 

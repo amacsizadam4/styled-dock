@@ -108,7 +108,7 @@ impl Default for Appearance {
             launch_bounce: true,
             auto_hide_delay_ms: 350,
             dock_opacity_percent: 78,
-            top_bar_opacity_percent: 36,
+            top_bar_opacity_percent: 60,
         }
     }
 }
@@ -170,7 +170,7 @@ impl Default for TopBar {
     fn default() -> Self {
         Self {
             enabled: true,
-            show_tray: true,
+            show_tray: false,
         }
     }
 }

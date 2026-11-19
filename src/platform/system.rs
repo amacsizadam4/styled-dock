@@ -20,7 +20,6 @@ pub enum SystemAction {
     Search,
     TaskView,
     ShowDesktop,
-    InputLanguage,
     SoundOutput,
     ToggleWifi,
     ToggleBluetooth,
@@ -43,7 +42,6 @@ impl SystemAction {
             Self::Search => crate::i18n::text("Windows Search"),
             Self::TaskView => crate::i18n::text("Task View"),
             Self::ShowDesktop => crate::i18n::text("Show desktop"),
-            Self::InputLanguage => crate::i18n::text("Switch input language"),
             Self::SoundOutput => crate::i18n::text("Sound output"),
             Self::ToggleWifi => crate::i18n::text("Change Wi-Fi"),
             Self::ToggleBluetooth => crate::i18n::text("Change Bluetooth"),
@@ -66,14 +64,12 @@ impl SystemAction {
             | Self::Search
             | Self::TaskView
             | Self::ShowDesktop
-            | Self::InputLanguage
             | Self::SoundOutput => {
                 let keys = match self {
                     Self::Start => vec![(VK_LWIN, false), (VK_LWIN, true)],
                     Self::Search => shortcut_keys(VK_S),
                     Self::TaskView => shortcut_keys(VK_TAB),
                     Self::ShowDesktop => shortcut_keys(VK_D),
-                    Self::InputLanguage => shortcut_keys(VK_SPACE),
                     Self::SoundOutput => vec![
                         (VK_LWIN, false),
                         (VK_LCONTROL, false),

@@ -11,57 +11,36 @@ use windows::Win32::UI::Shell::SHCreateMemStream;
 use windows::core::{Error, Interface, Result};
 use windows_numerics::{Matrix3x2, Vector2};
 
-use crate::bar_status::Battery;
+use crate::bar_status::{Battery, Connection};
 use crate::icons::{self, Symbol, VolumeLevel};
 use crate::render::{Surface, color, rect};
 
-pub const HEIGHT: i32 = 32;
+pub const HEIGHT: i32 = 28;
 const ICON: f32 = 20.0;
-const PADDING: f32 = 14.0;
+const PADDING: f32 = 12.0;
 const LABEL_GAP: f32 = 5.0;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum BarIcon {
     System,
     Active,
-    Wifi,
-    Bluetooth,
-    Display,
+    Network,
     Battery,
     Volume,
+    Input,
     Clock,
     QuickSettings,
     Tray(usize),
 }
 
-const ART: [(BarIcon, &[u8]); 8] = [
+const ART: [(BarIcon, &[u8]); 3] = [
     (
         BarIcon::System,
         include_bytes!("../../assets/topbar/windows.svg"),
     ),
     (
-        BarIcon::Wifi,
+        BarIcon::Network,
         include_bytes!("../../assets/topbar/wifi.svg"),
-    ),
-    (
-        BarIcon::Bluetooth,
-        include_bytes!("../../assets/topbar/bluetooth.svg"),
-    ),
-    (
-        BarIcon::Display,
-        include_bytes!("../../assets/topbar/display.svg"),
-    ),
-    (
-        BarIcon::Battery,
-        include_bytes!("../../assets/topbar/battery.svg"),
-    ),
-    (
-        BarIcon::Volume,
-        include_bytes!("../../assets/topbar/volume.svg"),
-    ),
-    (
-        BarIcon::Clock,
-        include_bytes!("../../assets/topbar/clock.svg"),
     ),
     (
         BarIcon::QuickSettings,
@@ -69,12 +48,22 @@ const ART: [(BarIcon, &[u8]); 8] = [
     ),
 ];
 
+const STATUS_ORDER: [BarIcon; 6] = [
+    BarIcon::Clock,
+    BarIcon::QuickSettings,
+    BarIcon::Input,
+    BarIcon::Volume,
+    BarIcon::Battery,
+    BarIcon::Network,
+];
+
 pub struct BarContents<'a> {
     pub tray: &'a [&'a crate::tray::TrayIcon],
     pub active: &'a str,
     pub clock: &'a str,
     pub battery: Battery,
-    pub wifi_disconnected: bool,
+    pub connection: Option<Connection>,
+    pub input: &'a str,
     pub audio: Option<(f32, bool)>,
     pub hovered: Option<BarIcon>,
 }
@@ -135,7 +124,17 @@ impl BarRenderer {
                 fades: ART
                     .iter()
                     .map(|(icon, _)| (*icon, 0.0))
-                    .chain([(BarIcon::Active, 0.0)])
+                    .chain(
+                        [
+                            BarIcon::Active,
+                            BarIcon::Input,
+                            BarIcon::Clock,
+                            BarIcon::Battery,
+                            BarIcon::Volume,
+                        ]
+                        .into_iter()
+                        .map(|icon| (icon, 0.0)),
+                    )
                     .collect(),
                 last_frame: Instant::now(),
                 icons_dark: crate::theme::dark(),
@@ -221,15 +220,12 @@ impl BarRenderer {
         }
         let width = pixels.0 as f32 / scale;
         let height = pixels.1 as f32 / scale;
-        let clock_width = (width - ART.len() as f32 * (ICON + PADDING) - LABEL_GAP).max(1.0);
+        let clock_width = (width - 2.0 * (ICON + PADDING)).clamp(1.0, 180.0);
         let clock = self.text_layout(contents.clock, clock_width, height)?;
+        unsafe { clock.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)? };
         let mut metrics = DWRITE_TEXT_METRICS::default();
         unsafe { clock.GetMetrics(&mut metrics)? };
-        let clock_width = if contents.clock.is_empty() {
-            0.0
-        } else {
-            LABEL_GAP + metrics.width.ceil()
-        };
+        let clock_width = metrics.width.ceil().clamp(1.0, clock_width);
         let battery_text = contents
             .battery
             .percent()
@@ -241,6 +237,12 @@ impl BarRenderer {
         } else {
             LABEL_GAP + metrics.width.ceil()
         };
+        let input = self.text_layout(contents.input, 48.0, height)?;
+        unsafe {
+            input.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)?;
+            input.GetMetrics(&mut metrics)?;
+        }
+        let input_width = metrics.width.ceil().max(ICON);
         let battery_plugged = matches!(
             contents.battery,
             Battery::Present {
@@ -253,40 +255,32 @@ impl BarRenderer {
         );
         let battery_icon_width = ICON + if battery_plugged { 10.0 } else { 0.0 };
         let mut right = width - PADDING;
-        let mut slots = Vec::with_capacity(ART.len());
-        let mut hitboxes = Vec::with_capacity(ART.len());
+        let mut slots = Vec::with_capacity(STATUS_ORDER.len() + 1);
+        let mut hitboxes = Vec::with_capacity(STATUS_ORDER.len() + 1);
         let px = |x: f32| (x * scale).round() as i32;
-        for (icon, document) in self
-            .icons
-            .iter()
-            .rev()
-            .filter(|(icon, _)| *icon != BarIcon::System)
-        {
-            let label_width = if *icon == BarIcon::Clock {
-                clock_width
-            } else if *icon == BarIcon::Battery {
-                battery_label_width
-            } else {
-                0.0
+        for icon in STATUS_ORDER {
+            if (icon == BarIcon::Clock && contents.clock.is_empty())
+                || (icon == BarIcon::Battery
+                    && matches!(contents.battery, Battery::AcPower | Battery::Unavailable))
+            {
+                continue;
+            }
+            let slot_width = match icon {
+                BarIcon::Clock => clock_width,
+                BarIcon::Battery => battery_icon_width + battery_label_width,
+                BarIcon::Input => input_width,
+                _ => ICON,
             };
-            let icon_width = if *icon == BarIcon::Battery {
-                battery_icon_width
-            } else {
-                ICON
-            };
-            let x = right - icon_width - label_width;
+            let x = right - slot_width;
             if x - PADDING / 2.0 < PADDING * 1.5 + ICON {
                 break;
             }
-            slots.push((*icon, document, x));
-            hitboxes.push((*icon, px(x - PADDING / 2.0)..px(right + PADDING / 2.0)));
+            slots.push((icon, x, slot_width));
+            hitboxes.push((icon, px(x - PADDING / 2.0)..px(right + PADDING / 2.0)));
             right = x - PADDING;
         }
-        if let Some((icon, document)) = self.icons.iter().find(|(icon, _)| *icon == BarIcon::System)
-        {
-            slots.push((*icon, document, PADDING));
-            hitboxes.push((*icon, px(PADDING / 2.0)..px(PADDING * 1.5 + ICON)));
-        }
+        slots.push((BarIcon::System, PADDING, ICON));
+        hitboxes.push((BarIcon::System, px(PADDING / 2.0)..px(PADDING * 1.5 + ICON)));
         let mut tray_slots = Vec::new();
         // Keep native status controls on the right, app tray icons just to their left.
         for (index, icon) in contents.tray.iter().enumerate().rev() {
@@ -336,24 +330,18 @@ impl BarRenderer {
                 };
             }
         }
-        for (icon, document, x) in slots {
+        for (icon, x, slot_width) in slots {
+            self.tile(icon, x, slot_width, height);
+            if matches!(icon, BarIcon::Input | BarIcon::Clock) {
+                let layout = if icon == BarIcon::Input {
+                    &input
+                } else {
+                    &clock
+                };
+                self.draw_text(layout, x);
+                continue;
+            }
             unsafe {
-                self.tile(
-                    icon,
-                    x,
-                    (if icon == BarIcon::Battery {
-                        battery_icon_width
-                    } else {
-                        ICON
-                    }) + if icon == BarIcon::Clock {
-                        clock_width
-                    } else if icon == BarIcon::Battery {
-                        battery_label_width
-                    } else {
-                        0.0
-                    },
-                    height,
-                );
                 if icon == BarIcon::Volume {
                     self.brush.SetColor(&color(0xf7f9ff, 1.0));
                     icons::draw_d2d(
@@ -367,15 +355,28 @@ impl BarRenderer {
                     );
                 } else if icon == BarIcon::Battery {
                     self.draw_battery(contents.battery, x, y);
-                } else {
+                } else if icon == BarIcon::Network && contents.connection != Some(Connection::Wifi)
+                {
+                    self.brush.SetColor(&color(0xf7f9ff, 1.0));
+                    icons::draw_d2d(
+                        &self.surface.context,
+                        &self.brush,
+                        contents.connection.unwrap_or(Connection::Other).symbol(),
+                        x,
+                        y,
+                        ICON,
+                        1.5,
+                    );
+                } else if let Some((_, document)) = self.icons.iter().find(|(key, _)| *key == icon)
+                {
                     self.surface
                         .context
                         .SetTransform(&Matrix3x2::translation(x, y));
                     self.svg.DrawSvgDocument(document);
                     self.surface.context.SetTransform(&Matrix3x2::identity());
                 }
-                if icon == BarIcon::Wifi && contents.wifi_disconnected {
-                    for (rgb, stroke) in [(0x141922, 3.5), (0xf7f9ff, 1.5)] {
+                if icon == BarIcon::Network && contents.connection.is_none() {
+                    for (rgb, stroke) in [(0x18212b, 3.5), (0xf7f9ff, 1.5)] {
                         self.brush.SetColor(&color(rgb, 1.0));
                         self.surface.context.DrawLine(
                             Vector2 {
@@ -392,9 +393,6 @@ impl BarRenderer {
                         );
                     }
                 }
-            }
-            if icon == BarIcon::Clock && clock_width > 0.0 {
-                self.draw_text(&clock, x + ICON + LABEL_GAP);
             }
             if icon == BarIcon::Battery && battery_label_width > 0.0 {
                 self.draw_text(&battery_label, x + battery_icon_width + LABEL_GAP);
@@ -499,14 +497,10 @@ impl BarRenderer {
                 radiusX: 7.0,
                 radiusY: 7.0,
             };
-            self.brush.SetColor(&color(0x263447, 0.78 * opacity));
+            self.brush.SetColor(&color(0x263447, 0.58 * opacity));
             self.surface
                 .context
                 .FillRoundedRectangle(&tile, &self.brush);
-            self.brush.SetColor(&color(0xe5edff, 0.27 * opacity));
-            self.surface
-                .context
-                .DrawRoundedRectangle(&tile, &self.brush, 1.0, None);
         }
     }
 
@@ -520,11 +514,8 @@ impl BarRenderer {
 
     fn draw_text(&self, layout: &IDWriteTextLayout, x: f32) {
         unsafe {
-            self.brush.SetColor(&color(
-                0x11151d,
-                if crate::theme::dark() { 0.85 } else { 0.0 },
-            ));
-            for (dx, y) in [(0.0, -0.75), (-0.75, 0.0), (0.75, 0.0), (0.0, 1.0)] {
+            self.brush.SetColor(&color(0x18212b, 0.85));
+            for (dx, y) in [(0.0, -0.6), (-0.6, 0.0), (0.6, 0.0), (0.0, 0.6)] {
                 self.surface.context.DrawTextLayout(
                     Vector2 { X: x + dx, Y: y },
                     layout,

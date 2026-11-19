@@ -27,7 +27,7 @@ hardware setup, or interaction has been verified; see the validation record belo
 | Appearance and placement | Auto/Light/Dark themes, configurable size, icon spacing, padding, label delay, opacity, hover zoom and animation; one selected display, optional space reservation, auto-hide, and fullscreen hiding/recovery. Most settings use Save and restart. |
 | Tray integration | Experimental app-icon mirroring, click/menu forwarding, an all-icons menu for overflow, and cached recovery of previously observed icons. Initial discovery remains incomplete for some apps. |
 | Setup and recovery | Searchable installed-app picker, duplicate-pin feedback, atomic config saves, malformed-config backup/reset, optional launch at sign-in, unconditional single-instance protection, graceful quit, and taskbar restore commands. Windows taskbar hiding is off by default and uses a recovery watchdog when enabled. |
-| Keyboard access | App menu and Quick Settings hotkeys, keyboard navigation within menus, Downloads selection/context-menu access, and native Task View, Show desktop, and input-language commands. Full accessibility support is still pending. |
+| Keyboard access | App menu and Quick Settings hotkeys, keyboard navigation within menus, Downloads selection/context-menu access, and native Task View and Show desktop commands. Full accessibility support is still pending. |
 | Release foundation | Version 1.0.0 in Cargo and Windows metadata, local v1.0 Git tag, portable Windows x64 ZIP and checksum, usage/contributor guides, and a Windows CI workflow for builds, formatting, and selected tests. |
 
 The titled window list, installed-app picker, startup option, instance guard,
@@ -133,21 +133,23 @@ documented behavior. Any remaining compatibility limits must be explicit.
 
 ### 3. Finish everyday usability and accessibility
 
-**Software included in v1.2.0; verification in progress.** See
+**Software began shipping in v1.2.0; verification in progress.** See
 [usability-accessibility.md](usability-accessibility.md) for usage, tests, and
 explicit hardware/assistive-technology/visual limits.
 
 - [ ] Move the Windows input-language/keyboard-layout switcher from the dock to
   the top bar. Show the active input language/layout, offer the installed layouts,
   and keep the indicator in sync with Windows and the focused app. Support mouse,
-  keyboard, and accessible activation; verify switching and external layout changes.
+  keyboard, and accessible activation. The control and native switching are
+  implemented. End-to-end checks for external changes and assistive technology
+  remain open.
 
-- [ ] Add mobile hotspot controls to Quick Settings (control panel) and the Wi-Fi
-  panel: show hotspot status, provide an on/off toggle, and link to Windows Mobile
-  hotspot settings for network configuration. Keep both panels in sync, explain
-  unavailable controls, and verify enable/disable behavior on supported hardware.
-  Controls, a shared status cache, disabled/busy reasons, and settings links are
-  implemented; actual hardware enable/disable remains pending.
+- [ ] Verify Mobile hotspot enable/disable on supported hardware. Its toggle,
+  status, unavailable/busy reasons, and settings link live in the Network panel's
+  connection section. Quick Settings links to the Network panel.
+- [x] Show Ethernet, Wi-Fi, cellular, and other routed connections in the top bar
+  and Quick Settings. Add links to the Windows network, Ethernet, and cellular
+  settings pages in the Network panel.
 - [ ] Complete screen-reader/UI Automation support for drawn dock and tray controls,
   accessible names, keyboard per-window commands, and predictable focus return.
   Native providers, keyboard navigation/context actions, and individual-window

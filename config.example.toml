@@ -33,7 +33,7 @@ search_first = false
 # Share the dock's display and reserve a band at its top edge.
 enabled = true
 # Mirror app notification icons in the top bar (experimental Windows shell integration).
-show_tray = true
+show_tray = false
 
 [appearance]
 theme = "auto" # auto follows Windows app mode; light or dark overrides it
@@ -47,7 +47,7 @@ animation_speed_percent = 100 # 25-200, 0 makes transitions instant
 launch_bounce = true
 auto_hide_delay_ms = 350 # 100-3000, applies in Auto-hide mode
 dock_opacity_percent = 78 # 0-100, background only
-top_bar_opacity_percent = 36 # 0-100, background only
+top_bar_opacity_percent = 60 # 0-100, background only
 
 [[pinned]]
 name = "File Explorer"

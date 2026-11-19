@@ -32,11 +32,13 @@ impl VolumeLevel {
 pub enum Symbol {
     Search,
     Wifi,
+    Ethernet,
+    Cellular,
+    Network,
     Bluetooth,
     Display,
     Moon,
     Battery,
-    Settings,
     Appearance,
     Bolt,
     Plug,
@@ -65,6 +67,36 @@ fn paths(symbol: Symbol) -> Vec<Path> {
             arc(12.0, 20.0, 11.0, -PI * 0.75, -PI * 0.25),
             arc(12.0, 20.0, 5.0, -PI * 0.75, -PI * 0.25),
             arc(12.0, 20.0, 0.6, 0.0, TAU),
+        ],
+        Symbol::Ethernet => vec![
+            vec![
+                (3.0, 5.0),
+                (21.0, 5.0),
+                (21.0, 16.0),
+                (16.0, 16.0),
+                (16.0, 20.0),
+                (8.0, 20.0),
+                (8.0, 16.0),
+                (3.0, 16.0),
+                (3.0, 5.0),
+            ],
+            vec![(8.0, 5.0), (8.0, 10.0)],
+            vec![(12.0, 5.0), (12.0, 10.0)],
+            vec![(16.0, 5.0), (16.0, 10.0)],
+        ],
+        Symbol::Cellular => (0..4)
+            .map(|index| {
+                let x = 4.5 + index as f32 * 5.0;
+                vec![(x, 20.0), (x, 15.0 - index as f32 * 4.0)]
+            })
+            .collect(),
+        Symbol::Network => vec![
+            arc(12.0, 12.0, 9.0, 0.0, TAU),
+            arc(12.0, 12.0, 9.0, 0.0, TAU)
+                .into_iter()
+                .map(|(x, y)| (12.0 + (x - 12.0) * 0.44, y))
+                .collect(),
+            vec![(3.0, 12.0), (21.0, 12.0)],
         ],
         Symbol::Bluetooth => vec![vec![
             (6.0, 7.0),
@@ -153,15 +185,6 @@ fn paths(symbol: Symbol) -> Vec<Path> {
                 (12.0, 18.0),
             ],
         ],
-        Symbol::Settings => {
-            let mut gear = Vec::new();
-            for i in 0..=48 {
-                let angle = i as f32 * TAU / 48.0;
-                let radius = if i % 6 == 1 || i % 6 == 2 { 10.0 } else { 8.0 };
-                gear.push((12.0 + radius * angle.cos(), 12.0 + radius * angle.sin()));
-            }
-            vec![gear, arc(12.0, 12.0, 3.3, 0.0, TAU)]
-        }
         Symbol::Volume(level) => {
             let mut result = vec![vec![
                 (2.0, 9.0),

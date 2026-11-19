@@ -34,7 +34,7 @@ pub fn configure(mode: ThemeMode) {
     refresh();
 }
 pub fn refresh() {
-    let mut light = 0u32;
+    let mut light = 1u32;
     let mut size = 4u32;
     unsafe {
         let _ = RegGetValueW(
@@ -61,16 +61,27 @@ pub fn dark() -> bool {
 }
 pub fn ui(rgb: u32) -> u32 {
     if dark() {
-        return rgb;
+        return match rgb {
+            0x171c2a | 0x18212b => 0x252629,
+            0x192437 => 0x242528,
+            0x41536f => 0x48494e,
+            0x202e44 => 0x303136,
+            0x293952 | 0x263447 => 0x3b3c42,
+            0x354967 => 0x494b53,
+            0xb3c0d5 => 0xbfc0c7,
+            0x8291a8 => 0x8d8f98,
+            _ => rgb,
+        };
     }
     match rgb {
-        0x171c2a | 0x18212b => 0xf0f3f8,
-        0x192437 => 0xf8f9fc,
-        0x41536f => 0xc3cbd7,
-        0x202e44 => 0xeef2f7,
-        0x354967 | 0x293952 | 0x263447 => 0xd9e3f2,
-        0xf6f8ff | 0xe8eefb | 0xf7f9ff | 0xe3edf9 | 0xf4f7ff => 0x202b3c,
-        0xb3c0d5 | 0x8291a8 => 0x58667a,
+        0x171c2a | 0x18212b => 0xeeeeef,
+        0x192437 => 0xf7f7f8,
+        0x41536f => 0xc7c8ce,
+        0x202e44 => 0xebecf0,
+        0x354967 | 0x293952 | 0x263447 => 0xdde0e7,
+        0xf6f8ff | 0xe8eefb | 0xf7f9ff | 0xe3edf9 | 0xf4f7ff => 0x25262a,
+        0xb3c0d5 | 0x8291a8 => 0x62646e,
+        0x90c2ff | 0xbad7ff => 0x1764ce,
         0xa9c7ff => 0x2469d8,
         _ => rgb,
     }
@@ -80,13 +91,13 @@ pub fn settings(rgb: u32) -> u32 {
         return rgb;
     }
     match rgb {
-        0xf7f8fb => 0x192437,
-        0xeef1f6 => 0x141d2c,
+        0xf7f8fb => 0x242528,
+        0xeef1f6 => 0x202124,
         0x1c2739 => 0xe8eefb,
-        0x526078 => 0xb3c0d5,
-        0xdbe1eb => 0x41536f,
+        0x526078 => 0xbfc0c7,
+        0xdbe1eb => 0x48494e,
         0x235bc3 => 0xa9c7ff,
-        0xdce8fd => 0x293952,
+        0xdce8fd => 0x3b3c42,
         _ => rgb,
     }
 }

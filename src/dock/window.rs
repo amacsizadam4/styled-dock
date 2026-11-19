@@ -574,7 +574,7 @@ fn run_dock() -> Result<Exit> {
                     }
                     if message.message == WM_HOTKEY {
                         if message.wParam.0 == 4 {
-                            if let Some(bar) = &topbar {
+                            if let Some(bar) = &mut topbar {
                                 bar.focus_accessible();
                             }
                             continue;
@@ -705,6 +705,7 @@ fn run_dock() -> Result<Exit> {
                             placement.update(items.len())?;
                             if let Some(bar) = &mut topbar {
                                 bar.update(placement.monitor())?;
+                                bar.refresh_theme();
                             }
                             frame_pending = true;
                         }
@@ -1443,7 +1444,6 @@ fn dock_menu(
     )?;
     menu.action(0x7002, crate::i18n::text("Task View"))?;
     menu.action(0x7003, crate::i18n::text("Show desktop"))?;
-    menu.action(0x7004, crate::i18n::text("Switch input language"))?;
     menu.divider()?;
     menu.action(
         0x7005,
@@ -1462,9 +1462,6 @@ fn dock_menu(
             (0x7001, Some((index, _))) => Some(MenuAction::Close(index)),
             (0x7002, _) => Some(MenuAction::System(crate::system::SystemAction::TaskView)),
             (0x7003, _) => Some(MenuAction::System(crate::system::SystemAction::ShowDesktop)),
-            (0x7004, _) => Some(MenuAction::System(
-                crate::system::SystemAction::InputLanguage,
-            )),
             (0x7005, _) => Some(MenuAction::Restore),
             (0x7006, _) => Some(MenuAction::Quit),
             (choice, Some((_, item))) if choice >= 0x8000 => item

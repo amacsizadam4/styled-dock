@@ -11,27 +11,37 @@ use windows::Win32::Globalization::{
 };
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::SystemInformation::GetLocalTime;
-use windows::Win32::UI::Controls::WM_MOUSELEAVE;
+use windows::Win32::UI::Controls::{
+    ICC_WIN95_CLASSES, INITCOMMONCONTROLSEX, InitCommonControlsEx, TOOLTIPS_CLASSW, TTF_SUBCLASS,
+    TTM_ADDTOOLW, TTM_NEWTOOLRECTW, TTM_UPDATETIPTEXTW, TTS_ALWAYSTIP, TTS_NOPREFIX, TTTOOLINFOW,
+    WM_MOUSELEAVE,
+};
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
-use windows::Win32::UI::Input::KeyboardAndMouse::{TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    HKL, TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent,
+};
 use windows::Win32::UI::Shell::{ABE_TOP, ABN_POSCHANGED};
 use windows::Win32::UI::WindowsAndMessaging::*;
-use windows::core::{Error, PCWSTR, Result, w};
+use windows::core::{Error, HSTRING, PCWSTR, PWSTR, Result, w};
 
 use crate::bar_render::{BarContents, BarIcon, BarRenderer, HEIGHT};
 use crate::bar_status::{
-    Audio, Battery, Power, PowerPlan, WM_AUDIO, WM_AUDIO_DEVICE, WM_WIFI, Wifi,
+    Audio, Battery, Connection, NetworkChanges, NetworkStatus, Power, PowerPlan, WM_AUDIO,
+    WM_AUDIO_DEVICE, WM_NETWORK,
 };
 use crate::icons::Symbol;
 use crate::placement::{AppBar, WM_APPBAR, WM_REPOSITION, monitor_info};
+use crate::platform::input_layout::{self, Target as InputTarget};
 use crate::popup::{Popup, scale};
 use crate::system::{self, SystemAction};
 use crate::window::DockItem;
 
 const CLOCK_TIMER: usize = 1;
 const HOVER_TIMER: usize = 2;
+const INPUT_TIMER: usize = 3;
 const WM_POWER_STATUS: u32 = WM_APP + 8;
 const WM_CLOCK_CHANGED: u32 = WM_APP + 12;
+const BRIGHTNESS_SLIDER: u32 = 30;
 
 pub enum Action {
     System(SystemAction),
@@ -45,7 +55,7 @@ pub struct TopBar {
     hwnd: HWND,
     appbar: Option<AppBar>,
     power: Option<Power>,
-    wifi: Option<Wifi>,
+    network_changes: Option<NetworkChanges>,
     audio: Option<Audio>,
     monitor: HMONITOR,
     bounds: RECT,
@@ -55,7 +65,14 @@ pub struct TopBar {
     active_window: Option<(HWND, u32)>,
     clock: String,
     battery: Battery,
-    network: &'static str,
+    network: NetworkStatus,
+    input_target: InputTarget,
+    input_layout: HKL,
+    input_text: String,
+    input_name: String,
+    input_tooltip: HWND,
+    tooltip_text: HSTRING,
+    tooltip_bounds: RECT,
     volume: Option<(f32, bool)>,
     hitboxes: Vec<(BarIcon, Range<i32>)>,
     hovered: Option<BarIcon>,
@@ -110,7 +127,7 @@ impl TopBar {
             hwnd,
             appbar: None,
             power: None,
-            wifi: None,
+            network_changes: None,
             audio: None,
             monitor: HMONITOR::default(),
             bounds: RECT::default(),
@@ -120,18 +137,26 @@ impl TopBar {
             active_window: None,
             clock: String::new(),
             battery: Power::status(),
-            network: Wifi::label(),
+            network: NetworkStatus::read(),
+            input_target: InputTarget::default(),
+            input_layout: HKL::default(),
+            input_text: "—".into(),
+            input_name: crate::i18n::text("Keyboard layout").into(),
+            input_tooltip: HWND::default(),
+            tooltip_text: HSTRING::new(),
+            tooltip_bounds: RECT::default(),
             volume: None,
             hitboxes: Vec::new(),
             hovered: None,
             tracking: false,
             tray: None,
         };
+        bar.init_input_tooltip(instance);
         bar.update(monitor)?;
         bar.appbar = Some(AppBar::new(hwnd, ABE_TOP)?);
         bar.update(monitor)?;
         bar.power = Some(Power::new(hwnd));
-        bar.wifi = Wifi::new(hwnd);
+        bar.network_changes = NetworkChanges::new(hwnd);
         bar.audio = Audio::new(hwnd).ok();
         if show_tray {
             bar.tray = Some(crate::tray::Tray::new(instance, hwnd)?);
@@ -139,7 +164,9 @@ impl TopBar {
         panels::refresh_radios(hwnd);
         crate::platform::hotspot::refresh(hwnd);
         bar.refresh_volume();
+        bar.refresh_input();
         bar.tick();
+        unsafe { SetTimer(Some(hwnd), INPUT_TIMER, 250, None) };
         Ok(bar)
     }
 
@@ -147,12 +174,17 @@ impl TopBar {
         self.hwnd
     }
 
-    pub fn focus_accessible(&self) {
+    pub fn focus_accessible(&mut self) {
+        self.refresh_input();
         self.accessibility.focus_first();
     }
 
     pub fn set_opacity(&mut self, opacity: f32) {
         self.renderer.set_opacity(opacity);
+        self.invalidate();
+    }
+
+    pub fn refresh_theme(&self) {
         self.invalidate();
     }
 
@@ -181,12 +213,10 @@ impl TopBar {
             self.audio = Audio::new(self.hwnd).ok();
         }
         // A service can be absent at launch and become available after resume.
-        if self.wifi.is_none() {
-            self.wifi = Wifi::new(self.hwnd);
-        }
-        self.network = Wifi::label();
+        self.network_changes = NetworkChanges::new(self.hwnd);
         panels::refresh_radios(self.hwnd);
         self.refresh_volume();
+        self.refresh_input();
         self.tick();
         self.invalidate();
     }
@@ -252,6 +282,7 @@ impl TopBar {
     }
 
     pub fn foreground_changed(&mut self, items: &[DockItem]) {
+        self.refresh_input();
         unsafe {
             let foreground = GetForegroundWindow();
             let mut pid = 0;
@@ -328,6 +359,7 @@ impl TopBar {
             WM_REPOSITION => self.update(monitor)?,
             WM_PAINT => self.paint()?,
             WM_TIMER if message.wParam.0 == CLOCK_TIMER => self.tick(),
+            WM_TIMER if message.wParam.0 == INPUT_TIMER => self.refresh_input(),
             WM_TIMER if message.wParam.0 == HOVER_TIMER => {
                 self.paint()?;
                 if !self.renderer.animating(self.hovered) {
@@ -349,13 +381,7 @@ impl TopBar {
                 }
             }
             panels::WM_RADIOS | crate::platform::hotspot::WM_HOTSPOT => self.invalidate(),
-            WM_WIFI => {
-                let network = Wifi::label();
-                if self.network != network {
-                    self.network = network;
-                    self.invalidate();
-                }
-            }
+            WM_NETWORK => self.refresh_network(),
             WM_AUDIO_DEVICE | WM_AUDIO => {
                 if message.message == WM_AUDIO_DEVICE {
                     if let Some(audio) = &mut self.audio {
@@ -419,9 +445,8 @@ impl TopBar {
                         BarIcon::System => self.system_menu(),
                         BarIcon::Active => self.active_menu(),
                         BarIcon::Battery => self.battery_menu(anchor),
-                        BarIcon::Wifi => self.wifi_menu(anchor),
-                        BarIcon::Bluetooth => self.bluetooth_menu(anchor),
-                        BarIcon::Display => self.display_menu(anchor),
+                        BarIcon::Network => self.network_menu(anchor),
+                        BarIcon::Input => self.input_menu(anchor),
                         BarIcon::Volume => self.volume_menu(anchor),
                         BarIcon::Clock => Ok(Some(Action::System(SystemAction::Notifications))),
                         BarIcon::QuickSettings => self.quick_settings(anchor),
@@ -455,6 +480,118 @@ impl TopBar {
         }
     }
 
+    fn refresh_input(&mut self) {
+        if let Some(target) = InputTarget::foreground() {
+            self.input_target = target;
+        }
+        let active = self.input_target.active();
+        if self.input_layout != active {
+            self.input_layout = active;
+            let layout = input_layout::layout_name(active);
+            self.input_name = input_layout::label(active, layout.as_deref());
+            self.input_text = input_layout::language_code(active);
+            self.invalidate();
+        }
+    }
+
+    fn init_input_tooltip(&mut self, instance: HINSTANCE) {
+        unsafe {
+            if !InitCommonControlsEx(&INITCOMMONCONTROLSEX {
+                dwSize: size_of::<INITCOMMONCONTROLSEX>() as u32,
+                dwICC: ICC_WIN95_CLASSES,
+            })
+            .as_bool()
+            {
+                return;
+            }
+            if let Ok(tooltip) = CreateWindowExW(
+                WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                TOOLTIPS_CLASSW,
+                None,
+                WS_POPUP | WINDOW_STYLE(TTS_ALWAYSTIP | TTS_NOPREFIX),
+                0,
+                0,
+                0,
+                0,
+                Some(self.hwnd),
+                None,
+                Some(instance),
+                None,
+            ) {
+                self.input_tooltip = tooltip;
+                self.tooltip_text = HSTRING::from(&self.input_name);
+                let tool = self.input_tool();
+                SendMessageW(
+                    tooltip,
+                    TTM_ADDTOOLW,
+                    None,
+                    Some(LPARAM((&raw const tool) as isize)),
+                );
+            }
+        }
+    }
+
+    fn input_tool(&self) -> TTTOOLINFOW {
+        TTTOOLINFOW {
+            cbSize: size_of::<TTTOOLINFOW>() as u32,
+            uFlags: TTF_SUBCLASS,
+            hwnd: self.hwnd,
+            uId: 1,
+            rect: self.tooltip_bounds,
+            lpszText: PWSTR(self.tooltip_text.as_ptr() as *mut _),
+            ..Default::default()
+        }
+    }
+
+    fn update_input_tooltip(&mut self, height: i32) {
+        if self.input_tooltip.is_invalid() {
+            return;
+        }
+        let bounds = self
+            .hitboxes
+            .iter()
+            .find(|(icon, _)| *icon == BarIcon::Input)
+            .map_or(RECT::default(), |(_, range)| RECT {
+                left: range.start,
+                right: range.end,
+                top: 0,
+                bottom: height,
+            });
+        if self.tooltip_bounds != bounds {
+            self.tooltip_bounds = bounds;
+            let tool = self.input_tool();
+            unsafe {
+                SendMessageW(
+                    self.input_tooltip,
+                    TTM_NEWTOOLRECTW,
+                    None,
+                    Some(LPARAM((&raw const tool) as isize)),
+                );
+            }
+        }
+        if self.tooltip_text != self.input_name.as_str() {
+            let old = std::mem::replace(&mut self.tooltip_text, HSTRING::from(&self.input_name));
+            let tool = self.input_tool();
+            unsafe {
+                SendMessageW(
+                    self.input_tooltip,
+                    TTM_UPDATETIPTEXTW,
+                    None,
+                    Some(LPARAM((&raw const tool) as isize)),
+                );
+            }
+            drop(old);
+        }
+    }
+
+    fn refresh_network(&mut self) {
+        let network = NetworkStatus::read();
+        if self.network != network {
+            self.network = network;
+            self.invalidate();
+        }
+    }
+
     fn tick(&mut self) {
         // On clock/status refresh, recover services that were missing at startup or
         // lost an endpoint without delivering a usable device callback.
@@ -465,10 +602,10 @@ impl TopBar {
                 self.audio = Audio::new(self.hwnd).ok();
             }
         }
-        if self.wifi.is_none() {
-            self.wifi = Wifi::new(self.hwnd);
+        if self.network_changes.is_none() {
+            self.network_changes = NetworkChanges::new(self.hwnd);
         }
-        self.network = Wifi::label();
+        self.refresh_network();
         let battery = Power::status();
         if self.battery != battery {
             self.battery = battery;
@@ -540,7 +677,8 @@ impl TopBar {
                     active: &self.active,
                     clock: &self.clock,
                     battery: self.battery,
-                    wifi_disconnected: self.network != crate::i18n::text("Wi-Fi connected"),
+                    connection: self.network.primary(),
+                    input: &self.input_text,
                     audio: self.volume,
                     hovered: self.hovered,
                     tray: &icons,
@@ -555,11 +693,11 @@ impl TopBar {
                     let (key, name) = match icon {
                         BarIcon::System => ("system".into(), "Windows".into()),
                         BarIcon::Active => ("active".into(), self.active.clone()),
-                        BarIcon::Wifi => ("wifi".into(), self.network.into()),
-                        BarIcon::Bluetooth => {
-                            ("bluetooth".into(), crate::i18n::text("Bluetooth").into())
-                        }
-                        BarIcon::Display => ("display".into(), crate::i18n::text("Display").into()),
+                        BarIcon::Network => ("network".into(), self.network.label().into()),
+                        BarIcon::Input => (
+                            "input".into(),
+                            crate::tr!("Keyboard layout: {layout}", layout = self.input_name),
+                        ),
                         BarIcon::Battery => ("battery".into(), self.battery.label()),
                         BarIcon::Volume => ("volume".into(), crate::i18n::text("Volume").into()),
                         BarIcon::Clock => ("clock".into(), self.clock.clone()),
@@ -599,6 +737,8 @@ impl TopBar {
                 })
                 .collect();
             self.accessibility.update(entries)?;
+            drop(tray);
+            self.update_input_tooltip(client.bottom);
         }
         Ok(())
     }
@@ -754,18 +894,116 @@ impl TopBar {
         })
     }
 
-    fn wifi_menu(&mut self, anchor: i32) -> Result<Option<Action>> {
+    fn input_menu(&mut self, anchor: i32) -> Result<Option<Action>> {
+        self.refresh_input();
+        let target = self.input_target;
+        let active = target.active();
+        let mut menu = Popup::new(self.hwnd, 300)?;
+        menu.heading(crate::i18n::text("Keyboard layout"))?;
+        let layouts = input_layout::available(active);
+        for (index, &layout) in layouts.iter().enumerate() {
+            let name = input_layout::layout_name(layout);
+            menu.option(
+                index as u32 + 2,
+                &input_layout::label(layout, name.as_deref()),
+                true,
+                layout == active,
+            )?;
+        }
+        menu.divider()?;
+        menu.action(1, crate::i18n::text("Language settings…"))?;
+        let choice = self.track_menu(&menu, anchor)?;
+        if choice == 1 {
+            return Ok(Some(Action::WindowsSettings("ms-settings:regionlanguage")));
+        }
+        if let Some(index) = choice.checked_sub(2)
+            && let Some(&layout) = layouts.get(index as usize)
+            && layout != active
+        {
+            target.select(layout)?;
+        }
+        Ok(None)
+    }
+
+    fn network_menu(&mut self, anchor: i32) -> Result<Option<Action>> {
         crate::platform::hotspot::refresh(self.hwnd);
         panels::refresh_radios(self.hwnd);
-        let mut menu = Popup::new(self.hwnd, 350)?;
+        let (choice, rows) = loop {
+            let (menu, rows) = self.network_panel()?;
+            let choice = self.track_menu(&menu, anchor)?;
+            if choice != crate::popup::REFRESH_PANEL {
+                break (choice, rows);
+            }
+        };
+        if let Some(index) = choice.checked_sub(100)
+            && let Some(network) = rows.get(index as usize)
+        {
+            if network.connected {
+                return Ok(None);
+            }
+            if !network.profile.is_empty() {
+                panels::connect(network)?;
+                return Ok(None);
+            }
+            return Ok(Some(Action::WindowsSettings("ms-availablenetworks:")));
+        }
+        Ok(match choice {
+            1 => Some(Action::System(SystemAction::ToggleWifi)),
+            2 => Some(Action::WindowsSettings("ms-availablenetworks:")),
+            3 => Some(Action::WindowsSettings("ms-settings:network-wifi")),
+            4 => Some(Action::WindowsSettings("ms-settings:network-ethernet")),
+            5 => Some(Action::WindowsSettings("ms-settings:network-cellular")),
+            6 => Some(Action::WindowsSettings("ms-settings:network")),
+            91 => Some(Action::System(SystemAction::ToggleHotspot)),
+            92 => Some(Action::WindowsSettings("ms-settings:network-mobilehotspot")),
+            _ => None,
+        })
+    }
+
+    fn network_panel(&mut self) -> Result<(Popup, Vec<panels::Network>)> {
+        self.refresh_network();
+        let mut menu = Popup::new(self.hwnd, 310)?;
         menu.refresh_on(crate::platform::hotspot::WM_HOTSPOT);
-        menu.heading(crate::i18n::text("Wi-Fi"))?;
-        menu.toggle(1, crate::i18n::text("Wi-Fi"), panels::radio_state(false))?;
+        menu.heading(crate::i18n::text("Network"))?;
+        if matches!(self.network.primary(), None | Some(Connection::Other)) {
+            menu.detail(self.network.label())?;
+        }
+        if let Some(connected) = self.network.ethernet {
+            menu.tile(
+                4,
+                Symbol::Ethernet,
+                crate::i18n::text("Ethernet"),
+                crate::i18n::text(if connected {
+                    "Connected"
+                } else {
+                    "Disconnected"
+                }),
+                true,
+                false,
+            )?;
+        }
+        if let Some(connected) = self.network.cellular {
+            menu.tile(
+                5,
+                Symbol::Cellular,
+                crate::i18n::text("Cellular"),
+                crate::i18n::text(if connected {
+                    "Connected"
+                } else {
+                    "Disconnected"
+                }),
+                true,
+                false,
+            )?;
+        }
+        self.hotspot_rows(&mut menu)?;
         menu.divider()?;
-        let networks = panels::networks();
+        menu.toggle(1, crate::i18n::text("Wi-Fi"), panels::radio_state(false))?;
+        let wifi_available = self.network.wifi.is_some() || panels::radio_state(false).is_some();
+        let networks = wifi_available.then(panels::networks);
         let mut rows = Vec::new();
         match networks {
-            Ok(mut networks) => {
+            Some(Ok(mut networks)) => {
                 networks.truncate(5);
                 rows = networks;
                 menu.detail(if rows.is_empty() {
@@ -791,42 +1029,33 @@ impl TopBar {
                         Symbol::Wifi,
                         &network.name,
                         &format!("{status} · {security} · {}%", network.signal),
-                        true,
+                        !network.connected,
                         network.connected,
                     )?;
                 }
             }
-            Err(_) => {
+            Some(Err(_)) => {
                 menu.detail(crate::i18n::text("Network list unavailable in this app"))?;
                 menu.detail(crate::i18n::text("View networks in Windows below"))?;
             }
+            None => menu.detail(crate::i18n::text("Wi-Fi unavailable"))?,
+        }
+        if wifi_available {
+            if !rows.iter().any(|network| network.connected)
+                && let Some(connected) = self.network.wifi
+            {
+                menu.detail(crate::i18n::text(if connected {
+                    "Wi-Fi connected"
+                } else {
+                    "Wi-Fi disconnected"
+                }))?;
+            }
+            menu.action(2, crate::i18n::text("Other networks…"))?;
+            menu.action(3, crate::i18n::text("Wi-Fi settings…"))?;
         }
         menu.divider()?;
-        menu.action(2, crate::i18n::text("Other networks…"))?;
-        menu.action(3, crate::i18n::text("Wi-Fi settings…"))?;
-        self.hotspot_rows(&mut menu)?;
-        let choice = self.track_menu(&menu, anchor)?;
-        if choice >= 100
-            && let Some(network) = rows.get((choice - 100) as usize)
-        {
-            if network.connected {
-                return Ok(None);
-            }
-            if !network.profile.is_empty() {
-                panels::connect(network)?;
-                return Ok(None);
-            }
-            return Ok(Some(Action::WindowsSettings("ms-availablenetworks:")));
-        }
-        Ok(match choice {
-            crate::popup::REFRESH_PANEL => return self.wifi_menu(anchor),
-            1 => Some(Action::System(SystemAction::ToggleWifi)),
-            2 => Some(Action::WindowsSettings("ms-availablenetworks:")),
-            3 => Some(Action::WindowsSettings("ms-settings:network-wifi")),
-            91 => Some(Action::System(SystemAction::ToggleHotspot)),
-            92 => Some(Action::WindowsSettings("ms-settings:network-mobilehotspot")),
-            _ => None,
-        })
+        menu.action(6, crate::i18n::text("Network settings…"))?;
+        Ok((menu, rows))
     }
 
     fn bluetooth_menu(&mut self, anchor: i32) -> Result<Option<Action>> {
@@ -851,17 +1080,16 @@ impl TopBar {
                 } else {
                     crate::i18n::text("Paired")
                 },
-                true,
+                false,
                 *connected,
             )?;
         }
         menu.divider()?;
         menu.action(2, crate::i18n::text("Add or manage devices…"))?;
-        menu.action(3, crate::i18n::text("Bluetooth settings…"))?;
         let choice = self.track_menu(&menu, anchor)?;
         Ok(match choice {
             1 => Some(Action::System(SystemAction::ToggleBluetooth)),
-            2 | 3 | 100.. => Some(Action::WindowsSettings("ms-settings:bluetooth")),
+            2 => Some(Action::WindowsSettings("ms-settings:bluetooth")),
             _ => None,
         })
     }
@@ -998,47 +1226,68 @@ impl TopBar {
     }
 
     fn quick_settings(&mut self, anchor: i32) -> Result<Option<Action>> {
-        crate::platform::hotspot::refresh(self.hwnd);
+        self.refresh_network();
         self.refresh_volume();
         panels::refresh_radios(self.hwnd);
-        let mut menu = Popup::new(self.hwnd, 400)?;
-        menu.refresh_on(crate::platform::hotspot::WM_HOTSPOT);
+        let mut menu = Popup::new(self.hwnd, 300)?;
         menu.heading(crate::i18n::text("Quick Settings"))?;
-        let networks = panels::networks().unwrap_or_default();
+        let connection = self.network.primary();
+        let networks = if connection == Some(Connection::Wifi) {
+            panels::networks().unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         let network_name = networks
             .iter()
             .find(|network| network.connected)
-            .map_or(self.network, |network| network.name.as_str());
-        menu.card(
+            .map_or_else(
+                || {
+                    if connection.is_some() {
+                        crate::i18n::text("Connected")
+                    } else {
+                        self.network.label()
+                    }
+                },
+                |network| network.name.as_str(),
+            );
+        menu.tile(
             10,
-            Symbol::Wifi,
-            crate::i18n::text("Wi-Fi"),
+            connection.unwrap_or(Connection::Other).symbol(),
+            connection.unwrap_or(Connection::Other).name(),
             network_name,
-            panels::radio_state(false) == Some(true),
+            true,
+            connection.is_some(),
         )?;
-        menu.card(
+        let bluetooth = panels::radio_state(true);
+        menu.tile(
             11,
             Symbol::Bluetooth,
             crate::i18n::text("Bluetooth"),
-            match panels::radio_state(true) {
+            match bluetooth {
                 Some(true) => crate::i18n::text("On"),
                 Some(false) => crate::i18n::text("Off"),
                 None => crate::i18n::text("Manage devices"),
             },
-            panels::radio_state(true) == Some(true),
+            true,
+            bluetooth == Some(true),
         )?;
-        menu.card(
-            12,
-            Symbol::Display,
-            crate::i18n::text("Display"),
-            crate::i18n::text("Brightness & color"),
-            false,
-        )?;
+        menu.divider()?;
+        let brightness = panels::Brightness::for_monitor(self.monitor);
+        if let Some(brightness) = &brightness {
+            menu.slider_for(
+                BRIGHTNESS_SLIDER,
+                crate::i18n::text("Brightness"),
+                brightness.level,
+                true,
+            )?;
+        }
+        self.volume_rows(&mut menu)?;
+        menu.divider()?;
         menu.card(
             13,
             Symbol::Moon,
             crate::i18n::text("Focus"),
-            crate::i18n::text("Windows focus settings"),
+            crate::i18n::text("Windows"),
             false,
         )?;
         menu.card(
@@ -1048,35 +1297,22 @@ impl TopBar {
             &self.battery.label(),
             false,
         )?;
-        menu.card(
-            15,
-            Symbol::Settings,
-            crate::i18n::text("Dock settings"),
-            crate::i18n::text("Appearance & apps"),
-            false,
-        )?;
         menu.divider()?;
-        self.volume_rows(&mut menu)?;
-        menu.divider()?;
-        menu.action(6, crate::i18n::text("Sound settings…"))?;
-        menu.action(90, crate::i18n::text("All app tray icons…"))?;
-        self.hotspot_rows(&mut menu)?;
-        let choice = self.track_menu(&menu, anchor)?;
+        menu.action(12, crate::i18n::text("Display options…"))?;
+        menu.action(15, crate::i18n::text("Dock settings"))?;
+        if self.tray.is_some() {
+            menu.action(90, crate::i18n::text("All app tray icons…"))?;
+        }
+        let choice = self.track_controls(&menu, anchor, brightness.as_ref())?;
         self.apply_volume(choice)?;
         match choice {
-            crate::popup::REFRESH_PANEL => self.quick_settings(anchor),
-            10 => self.wifi_menu(anchor),
+            10 => self.network_menu(anchor),
             90 => self.tray_menu(anchor),
-            91 => Ok(Some(Action::System(SystemAction::ToggleHotspot))),
-            92 => Ok(Some(Action::WindowsSettings(
-                "ms-settings:network-mobilehotspot",
-            ))),
             11 => self.bluetooth_menu(anchor),
             12 => self.display_menu(anchor),
             13 => Ok(Some(Action::WindowsSettings("ms-settings:quiethours"))),
             14 => self.battery_menu(anchor),
             15 => Ok(Some(Action::DockSettings)),
-            6 => Ok(Some(Action::WindowsSettings("ms-settings:sound"))),
             _ => Ok(None),
         }
     }
@@ -1094,21 +1330,33 @@ impl TopBar {
     }
 
     fn track_menu(&mut self, menu: &Popup, anchor: i32) -> Result<u32> {
-        let choice = menu.track_with_slider(
+        self.track_controls(menu, anchor, None)
+    }
+
+    fn track_controls(
+        &mut self,
+        menu: &Popup,
+        anchor: i32,
+        brightness: Option<&panels::Brightness>,
+    ) -> Result<u32> {
+        let choice = menu.track_with_sliders(
             self.hwnd,
             POINT {
                 x: self.bounds.left + anchor,
                 y: self.bounds.bottom + scale(3, self.dpi),
             },
             TPM_RIGHTALIGN,
-            &|level| {
-                if let Some(audio) = &self.audio {
+            &|id, level| {
+                if id == BRIGHTNESS_SLIDER {
+                    if let Some(brightness) = brightness {
+                        brightness.set(level)?;
+                    }
+                } else if let Some(audio) = &self.audio {
                     audio.set_volume(level)?;
                 }
                 Ok(())
             },
         );
-        self.network = Wifi::label();
         self.battery = Power::status();
         self.refresh_volume();
         self.tick();
@@ -1122,10 +1370,14 @@ impl Drop for TopBar {
         drop(self.tray.take());
         drop(self.appbar.take());
         drop(self.audio.take());
-        drop(self.wifi.take());
+        drop(self.network_changes.take());
         drop(self.power.take());
         unsafe {
             let _ = KillTimer(Some(self.hwnd), CLOCK_TIMER);
+            let _ = KillTimer(Some(self.hwnd), INPUT_TIMER);
+            if !self.input_tooltip.is_invalid() {
+                let _ = DestroyWindow(self.input_tooltip);
+            }
             let _ = DestroyWindow(self.hwnd);
         }
     }
@@ -1182,6 +1434,13 @@ mod tests {
         let foreground = unsafe { GetForegroundWindow() };
         let mut bar = TopBar::new(instance, monitor, 0.36, false)?;
         bar.set_visible(true)?;
+        bar.paint()?;
+        assert!(
+            bar.accessible_keys
+                .iter()
+                .any(|(key, icon)| { key == "input" && *icon == BarIcon::Input })
+        );
+        assert!(!bar.input_layout.is_invalid());
         // An invalidated display handle must fall back before its paired dock
         // window has received and processed WM_DISPLAYCHANGE.
         bar.update(HMONITOR::default())?;

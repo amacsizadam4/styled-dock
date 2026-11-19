@@ -5,7 +5,7 @@ the debug executable is `target/debug/styled-dock.exe`.
 
 First launch opens setup before the dock changes Windows shell state. Choose
 **Auto (Windows)**, **English**, or **Türkçe**, optionally enable startup at sign-in,
-and review the display, appearance, layout, shortcuts, and pinned-app pages.
+and review the display, appearance, advanced layout, shortcuts, and pinned-app pages.
 **Finish setup** saves your choices and starts the dock. Cancel closes setup
 without saving; it appears again next time. Upgrading an older config opens setup
 once and preserves its settings and pins.
@@ -34,9 +34,16 @@ executable in its final location before enabling startup; re-enable it if you mo
 - Ctrl+Alt+F focuses the dock; Ctrl+Alt+B focuses the status bar. Navigate with
   arrows, Tab, Home/End, activate with Enter/Space, or open the focused item's
   menu with the Menu key/Shift+F10. Escape returns to the previous window.
-- Quick Settings and Wi-Fi include Mobile hotspot status/toggle and a Windows
-  configuration link. Unavailable or busy controls explain their state.
-- Settings appearance changes preview immediately; Cancel restores the original.
+- Open the top-bar network icon or the network row in Quick Settings to see
+  Ethernet, Wi-Fi, or cellular link status and open the relevant Windows
+  settings. The Network panel contains the Mobile hotspot toggle and
+  configuration link, including when the current connection is wired.
+- Select the short language label next to the clock to switch the focused app's
+  keyboard layout. Hover over it for the full layout name. The menu marks the
+  active layout and follows input changes made with Win+Space.
+- **Settings → Appearance** previews Auto (Windows), Light, Dark, and the dock
+  size, hover zoom, and opacity sliders. Cancel restores the original appearance.
+  **Advanced** holds exact icon sizes, spacing, and animation timing.
   The active config path opens Explorer, and Save a copy exports a recovery draft
   without changing the active file. Invalid fields are focused when saving.
 - Styled Dock's own notification icon offers Settings, Restore taskbar and quit,
@@ -49,15 +56,16 @@ the remaining validation limits.
   their positions save with the app order. Hiding a shortcut retains its position.
 - Click an app to activate/minimize it. Right-click to select an individual window,
   launch another instance, pin/unpin, or close its windows gracefully.
-- Right-click the dock for Settings, Task View, Show desktop, input-language
-  switching, launch-at-sign-in, or Quit. Quitting restores the taskbar watchdog's
+- Right-click the dock for Settings, Task View, Show desktop, launch-at-sign-in,
+  or Quit. Quitting restores the taskbar watchdog's
   saved state. The restore-and-quit action also exits the dock.
 - Ctrl+Alt+D opens the app menu; Ctrl+Alt+S opens Quick Settings. Use arrows,
   Tab, Enter, and Escape within menus. Shortcuts already claimed by another app
   are left alone. These are additional dock shortcuts; native Win+number still
   refers to Explorer's pins.
-- Quick Settings → All app tray icons lists mirrored icons, including those that
-  do not fit in the top bar. Select an icon, then Open or Show app menu.
+- Quick Settings puts brightness (on supported displays) and volume sliders
+  beside network, Bluetooth, and power controls. Enable **Show app tray icons**
+  in Settings → Display to mirror app icons and show their list in Quick Settings.
 - Sound → Choose sound output opens Windows 11's native output selector using
   Win+Ctrl+V. Sound Settings remains available on other versions.
 - Settings → Pinned Apps → Installed apps opens a searchable Windows app picker.

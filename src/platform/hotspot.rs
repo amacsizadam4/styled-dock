@@ -1,4 +1,4 @@
-//! A single shared snapshot for both panels. WinRT work stays off the UI thread.
+//! Mobile hotspot state for the Wi-Fi panel. WinRT work stays off the UI thread.
 use std::sync::{
     Mutex,
     atomic::{AtomicBool, AtomicIsize, Ordering},
@@ -29,7 +29,9 @@ impl Default for Status {
     }
 }
 static STATUS: Mutex<Option<Status>> = Mutex::new(None);
-static BUSY: AtomicBool = AtomicBool::new(false);
+static REFRESHING: AtomicBool = AtomicBool::new(false);
+static TOGGLING: AtomicBool = AtomicBool::new(false);
+static OPERATION: Mutex<()> = Mutex::new(());
 static OWNER: AtomicIsize = AtomicIsize::new(0);
 
 pub fn status() -> Status {
@@ -56,34 +58,36 @@ fn publish(state: Status) {
 }
 pub fn refresh(hwnd: HWND) {
     OWNER.store(hwnd.0 as isize, Ordering::Relaxed);
-    if BUSY
+    if REFRESHING
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
         .is_ok()
     {
         std::thread::spawn(|| {
+            let _operation = OPERATION.lock().unwrap_or_else(|error| error.into_inner());
             let _ = run(false);
-            BUSY.store(false, Ordering::Release);
+            REFRESHING.store(false, Ordering::Release);
         });
     }
 }
 pub fn toggle() -> Result<()> {
-    if BUSY
+    if TOGGLING
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
         .is_err()
     {
         return Ok(());
     }
-    let mut pending = status();
-    pending.busy = true;
-    pending.detail = "Changing mobile hotspot…".into();
-    publish(pending);
-    let result = std::thread::spawn(|| run(true)).join().unwrap_or_else(|_| {
+    let result = std::thread::spawn(|| {
+        let _operation = OPERATION.lock().unwrap_or_else(|error| error.into_inner());
+        run(true)
+    })
+    .join()
+    .unwrap_or_else(|_| {
         Err(Error::new(
             E_FAIL,
             crate::i18n::text("Mobile hotspot request failed."),
         ))
     });
-    BUSY.store(false, Ordering::Release);
+    TOGGLING.store(false, Ordering::Release);
     result
 }
 fn run(toggle: bool) -> Result<()> {
@@ -209,11 +213,7 @@ fn run(toggle: bool) -> Result<()> {
         publish(Status {
             on: None,
             busy: false,
-            detail: if toggle {
-                error.message()
-            } else {
-                error.message()
-            },
+            detail: error.message(),
         });
     }
     operation

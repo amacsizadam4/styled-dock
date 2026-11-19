@@ -4,8 +4,8 @@
 1 24 "resources/app.manifest"
 
 1 VERSIONINFO
-FILEVERSION 1,2,0,0
-PRODUCTVERSION 1,2,0,0
+FILEVERSION 1,3,0,0
+PRODUCTVERSION 1,3,0,0
 FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
 FILEFLAGS 0
 FILEOS VOS_NT_WINDOWS32
@@ -16,11 +16,11 @@ BEGIN
         BLOCK "040904b0"
         BEGIN
             VALUE "FileDescription", "Styled Dock - macOS-inspired dock for Windows\0"
-            VALUE "FileVersion", "1.2.0\0"
+            VALUE "FileVersion", "1.3.0\0"
             VALUE "InternalName", "styled-dock\0"
             VALUE "OriginalFilename", "styled-dock.exe\0"
             VALUE "ProductName", "Styled Dock\0"
-            VALUE "ProductVersion", "1.2.0\0"
+            VALUE "ProductVersion", "1.3.0\0"
         END
     END
     BLOCK "VarFileInfo"
@@ -53,39 +53,40 @@ BEGIN
     CONTROL "Hide dock and top bar in &fullscreen", 113, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 130, 158, 298, 14
     CONTROL "Hide the &Windows taskbar while the dock is running", 114, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 130, 184, 298, 14
 
-    LTEXT "Dock si&ze (%)", 210, 130, 65, 116, 10
-    EDITTEXT 115, 249, 62, 40, 14, ES_NUMBER | WS_TABSTOP
-    LTEXT "60-160", 211, 300, 65, 124, 10
-    LTEXT "Icon size (px)", 223, 130, 93, 116, 10
-    EDITTEXT 140, 249, 90, 40, 14, ES_NUMBER | WS_TABSTOP
-    LTEXT "24-96", 224, 300, 93, 124, 10
-    LTEXT "Icon spacing (px)", 225, 130, 121, 116, 10
-    EDITTEXT 141, 249, 118, 40, 14, ES_NUMBER | WS_TABSTOP
-    LTEXT "0-32", 226, 300, 121, 124, 10
-    LTEXT "Edge padding (px)", 227, 130, 149, 116, 10
-    EDITTEXT 142, 249, 146, 40, 14, ES_NUMBER | WS_TABSTOP
-    LTEXT "4-40", 228, 300, 149, 124, 10
-    LTEXT "App label delay (ms)", 229, 130, 177, 116, 10
-    EDITTEXT 143, 249, 174, 40, 14, ES_NUMBER | WS_TABSTOP
-    LTEXT "0-3000 (1000 = 1 second)", 230, 300, 177, 124, 10
-    LTEXT "&Hover zoom (%)", 212, 130, 86, 116, 10
-    EDITTEXT 116, 249, 83, 40, 14, ES_NUMBER | WS_TABSTOP
-    LTEXT "0-100 (0 is off)", 213, 300, 86, 124, 10
-    LTEXT "Animation speed (%)", 214, 130, 107, 116, 10
-    EDITTEXT 117, 249, 104, 40, 14, ES_NUMBER | WS_TABSTOP
-    LTEXT "0 (instant) or 25-200", 215, 300, 107, 124, 10
-    LTEXT "Auto-hide delay (ms)", 216, 130, 128, 116, 10
-    EDITTEXT 118, 249, 125, 40, 14, ES_NUMBER | WS_TABSTOP
-    LTEXT "100-3000", 217, 300, 128, 124, 10
-    LTEXT "Dock background opacity", 218, 130, 151, 116, 10
-    CONTROL "", 131, TRACKBAR_CLASS, TBS_NOTICKS | WS_TABSTOP, 246, 149, 147, 21
-    LTEXT "", 137, 398, 151, 33, 10
-    LTEXT "Top bar background opacity", 219, 130, 174, 116, 10
-    CONTROL "", 132, TRACKBAR_CLASS, TBS_NOTICKS | WS_TABSTOP, 246, 172, 147, 21
-    LTEXT "", 138, 398, 174, 33, 10
-    CONTROL "Bounce on launch", 119, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 130, 195, 148, 12
-    LTEXT "Color mode", 222, 130, 214, 95, 10
-    COMBOBOX 139, 249, 210, 179, 72, CBS_DROPDOWNLIST | WS_TABSTOP
+    LTEXT "Color mode", 222, 130, 69, 95, 11
+    COMBOBOX 139, 249, 66, 179, 72, CBS_DROPDOWNLIST | WS_TABSTOP
+    LTEXT "Dock si&ze", 210, 130, 98, 116, 11
+    CONTROL "Dock size", 115, TRACKBAR_CLASS, TBS_NOTICKS | WS_TABSTOP, 246, 97, 147, 21
+    LTEXT "", 211, 398, 98, 33, 11
+    LTEXT "&Hover zoom", 212, 130, 122, 116, 11
+    CONTROL "Hover zoom", 116, TRACKBAR_CLASS, TBS_NOTICKS | WS_TABSTOP, 246, 121, 147, 21
+    LTEXT "", 213, 398, 122, 33, 11
+    LTEXT "Dock background opacity", 218, 130, 146, 116, 11
+    CONTROL "", 131, TRACKBAR_CLASS, TBS_NOTICKS | WS_TABSTOP, 246, 145, 147, 21
+    LTEXT "", 137, 398, 146, 33, 11
+    LTEXT "Top bar background opacity", 219, 130, 170, 116, 11
+    CONTROL "", 132, TRACKBAR_CLASS, TBS_NOTICKS | WS_TABSTOP, 246, 169, 147, 21
+    LTEXT "", 138, 398, 170, 33, 11
+    CONTROL "Bounce on launch", 119, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 130, 198, 148, 12
+
+    LTEXT "Icon size (px)", 223, 130, 69, 116, 10
+    EDITTEXT 140, 249, 66, 40, 14, ES_NUMBER | WS_TABSTOP
+    LTEXT "24-96", 224, 300, 69, 124, 10
+    LTEXT "Icon spacing (px)", 225, 130, 94, 116, 10
+    EDITTEXT 141, 249, 91, 40, 14, ES_NUMBER | WS_TABSTOP
+    LTEXT "0-32", 226, 300, 94, 124, 10
+    LTEXT "Edge padding (px)", 227, 130, 119, 116, 10
+    EDITTEXT 142, 249, 116, 40, 14, ES_NUMBER | WS_TABSTOP
+    LTEXT "4-40", 228, 300, 119, 124, 10
+    LTEXT "App label delay (ms)", 229, 130, 144, 116, 10
+    EDITTEXT 143, 249, 141, 40, 14, ES_NUMBER | WS_TABSTOP
+    LTEXT "0-3000 (1000 = 1 second)", 230, 300, 144, 124, 10
+    LTEXT "Animation speed (%)", 214, 130, 169, 116, 10
+    EDITTEXT 117, 249, 166, 40, 14, ES_NUMBER | WS_TABSTOP
+    LTEXT "0 (instant) or 25-200", 215, 300, 169, 124, 10
+    LTEXT "Auto-hide delay (ms)", 216, 130, 194, 116, 10
+    EDITTEXT 118, 249, 191, 40, 14, ES_NUMBER | WS_TABSTOP
+    LTEXT "100-3000", 217, 300, 194, 124, 10
 
     CONTROL "Show &Start menu", 145, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 130, 71, 298, 14
     CONTROL "Show Windows &Search", 146, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 130, 101, 298, 14

@@ -270,16 +270,24 @@ impl Renderer {
             self.surface
                 .context
                 .FillRoundedRectangle(&panel, &self.brush);
+            self.brush.SetColor(&color(0xe3edf9, self.opacity * 0.18));
+            self.surface
+                .context
+                .DrawRoundedRectangle(&panel, &self.brush, 1.0, None);
         }
         for index in (1..items.len()).filter(|_| dragged.is_none()) {
-            if items[index].utility() != items[index - 1].utility()
-                || (!items[index].utility() && items[index].pinned != items[index - 1].pinned)
-            {
+            let in_stack = |item: &crate::window::DockItem| {
+                matches!(
+                    item.pin.target.as_str(),
+                    "shell:Downloads" | "shell:RecycleBinFolder"
+                ) && !item.pinned
+            };
+            if in_stack(&items[index]) && !in_stack(&items[index - 1]) {
                 let left = scene.icons[index - 1];
                 let right = scene.icons[index];
                 let x = (left.x + left.width + right.x) / 2.0;
                 unsafe {
-                    self.brush.SetColor(&color(0x8291a8, 0.65));
+                    self.brush.SetColor(&color(0xe3edf9, 0.35));
                     self.surface.context.DrawLine(
                         Vector2 {
                             X: x,
@@ -374,40 +382,18 @@ impl Renderer {
                         .windows
                         .iter()
                         .any(|&window| crate::watcher::attention(window));
-                let radius = 2.0;
                 let dot = D2D1_ELLIPSE {
                     point: windows_numerics::Vector2 {
                         X: left + size / 2.0,
                         Y: scene.panel.y + scene.panel.height - 7.0,
                     },
-                    radiusX: if active { 8.0 } else { radius },
-                    radiusY: radius,
+                    radiusX: 2.0,
+                    radiusY: 2.0,
                 };
                 unsafe {
                     self.brush
                         .SetColor(&color(if attention { 0xffb74d } else { 0xe3edf9 }, 1.0));
                     self.surface.context.FillEllipse(&dot, &self.brush);
-                }
-                let count = item.windows.len();
-                if count > 1 && size >= 25.0 {
-                    let count = if count > 99 {
-                        "99+".into()
-                    } else {
-                        count.to_string()
-                    };
-                    let width = if count.len() > 2 { 26.0 } else { 20.0 };
-                    let x = left + size - width;
-                    self.card(x, top + 1.0, width, 18.0, 8.0, 0x283b56, 1.0);
-                    let _ = self.text(
-                        &count,
-                        &self.detail,
-                        x + 1.0,
-                        top + 1.0,
-                        width - 2.0,
-                        18.0,
-                        0xf4f7ff,
-                        true,
-                    );
                 }
             }
         }

@@ -1,26 +1,40 @@
 # Everyday usability and accessibility — phase 3
 
-The phase-3 software changes are included in v1.2.0. Hardware, assistive
-technology, and the complete visual matrix remain separate verification work.
+The phase-3 software changes began shipping in v1.2.0 and continue in v1.3.0.
+Hardware, assistive technology, and the complete visual matrix remain separate
+verification work.
 The remaining phase-2 manual checks are deferred, as requested.
 
-## Mobile hotspot
+## Network and Mobile hotspot
 
-Quick Settings and the Wi-Fi panel now contain a Mobile hotspot toggle, status,
-and a link to **Windows Mobile hotspot settings**. Both read the same cached
-state. Queries run on a WinRT worker; changes use the shell worker and an async
-operation deadline. The UI disables the toggle while changing or when Windows
-reports that control is unavailable, with a reason and a settings link.
+Open Network from the top bar or from Quick Settings. The icon shows Ethernet,
+Wi-Fi, cellular, or another routed connection. The panel shows available
+adapters separately and links to Windows network settings. When multiple
+links are active, the icon prefers Ethernet, then Wi-Fi, then cellular.
+These indicators report link state. Internet reachability is a separate check.
 
-The cached state refreshes at startup, resume, and when opening either panel.
-Custom panels refresh when a new result arrives. Short/large-scale displays and
-high contrast use the native menu fallback; reopen a native fallback menu to
-refresh its displayed snapshot. Names and credentials are configured in Windows,
-so Styled Dock does not store a hotspot password.
+The Network panel contains Mobile hotspot status, a toggle, and a link to
+**Windows Mobile hotspot settings**. Queries run on a WinRT worker. Changes use
+the shell worker and an async operation deadline. The UI disables the toggle
+while changing or when Windows reports that control is unavailable and shows why.
+The snapshot refreshes at startup, on resume, and when opening Network. Reopen the native
+high-contrast or oversized menu for a fresh snapshot. Configure network names
+and credentials in Windows.
 
 **Not yet verified:** actual enable/disable on compatible hardware and policy
 configurations. No test toggled the host's networking. Availability depends on
 Windows, its capability checks, the active connection, and the network adapter.
+
+## Input language and keyboard layout
+
+The indicator next to the clock shows the focused app's language code.
+Hover over it for the full keyboard layout name. Its menu lists the layouts
+Windows exposes to desktop apps,
+marks the active one, and opens Windows language settings. After focusing the
+top bar with Ctrl+Alt+B, use arrow keys to reach the indicator and Enter to
+open it. The bar polls the focused app's layout to follow external changes.
+Apps can decline a layout change request. Win+Space remains available for
+layouts and input methods managed by the Windows picker.
 
 ## Keyboard and accessibility
 
