@@ -31,6 +31,20 @@ executable in its final location before enabling startup; re-enable it if you mo
 
 ## Everyday controls
 
+- Ctrl+Alt+F focuses the dock; Ctrl+Alt+B focuses the status bar. Navigate with
+  arrows, Tab, Home/End, activate with Enter/Space, or open the focused item's
+  menu with the Menu key/Shift+F10. Escape returns to the previous window.
+- Quick Settings and Wi-Fi include Mobile hotspot status/toggle and a Windows
+  configuration link. Unavailable or busy controls explain their state.
+- Settings appearance changes preview immediately; Cancel restores the original.
+  The active config path opens Explorer, and Save a copy exports a recovery draft
+  without changing the active file. Invalid fields are focused when saving.
+- Styled Dock's own notification icon offers Settings, Restore taskbar and quit,
+  and Quit independently of app-icon mirroring.
+
+See [the phase-3 guide](usability-accessibility.md) for accessibility behavior and
+the remaining validation limits.
+
 - Start and Search appear at the far left by default. Drag either to any slot;
   their positions save with the app order. Hiding a shortcut retains its position.
 - Click an app to activate/minimize it. Right-click to select an individual window,

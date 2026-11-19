@@ -94,6 +94,9 @@ pub struct BarRenderer {
 }
 
 impl BarRenderer {
+    pub fn set_opacity(&mut self, opacity: f32) {
+        self.opacity = opacity.clamp(0.0, 1.0);
+    }
     pub fn new(hwnd: HWND, opacity: f32) -> Result<Self> {
         let surface = Surface::new(hwnd, (1, 1))?;
         unsafe {

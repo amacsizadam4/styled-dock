@@ -24,6 +24,7 @@ pub enum SystemAction {
     SoundOutput,
     ToggleWifi,
     ToggleBluetooth,
+    ToggleHotspot,
     TaskManager,
     Store,
     Sleep,
@@ -46,6 +47,7 @@ impl SystemAction {
             Self::SoundOutput => crate::i18n::text("Sound output"),
             Self::ToggleWifi => crate::i18n::text("Change Wi-Fi"),
             Self::ToggleBluetooth => crate::i18n::text("Change Bluetooth"),
+            Self::ToggleHotspot => crate::i18n::text("Change mobile hotspot"),
             Self::TaskManager => crate::i18n::text("Task Manager"),
             Self::Store => crate::i18n::text("Microsoft Store"),
             Self::Sleep => crate::i18n::text("Sleep"),
@@ -98,6 +100,7 @@ impl SystemAction {
             }
             Self::ToggleWifi => crate::panels::toggle_radio(false),
             Self::ToggleBluetooth => crate::panels::toggle_radio(true),
+            Self::ToggleHotspot => crate::platform::hotspot::toggle(),
             Self::Store => crate::shell::launch("ms-windows-store:"),
             Self::TaskManager => {
                 let mut path = [0; 32768];

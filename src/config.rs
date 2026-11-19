@@ -285,6 +285,48 @@ impl Source {
     }
 
     pub fn save(&self, config: &Config) -> Result<()> {
+        self.replace(&self.contents(config)?)
+    }
+
+    /// Keep pin targets valid when a recovery copy is saved in another folder.
+    pub fn save_copy(&self, path: &Path, config: &Config) -> Result<()> {
+        if fs::canonicalize(path)
+            .ok()
+            .zip(fs::canonicalize(&self.path).ok())
+            .is_some_and(|(a, b)| a == b)
+            || path == self.path
+        {
+            return Err(invalid(
+                path,
+                crate::i18n::text("Choose a different file for the copy."),
+            ));
+        }
+        let contents = self.contents(config)?;
+        let resolved = parse(&contents, &self.path)?;
+        let mut document: DocumentMut = contents.parse().map_err(|error| invalid(path, error))?;
+        if !resolved.pinned.is_empty() {
+            let mut tables = ArrayOfTables::new();
+            for pin in &resolved.pinned {
+                tables.push(pin_table(pin));
+            }
+            document["pinned"] = Item::ArrayOfTables(tables);
+        }
+        let contents = document.to_string();
+        parse(&contents, path)?;
+        let (text, existed) = match fs::read_to_string(path) {
+            Ok(text) => (text, true),
+            Err(error) if error.kind() == ErrorKind::NotFound => (String::new(), false),
+            Err(error) => return Err(invalid(path, error)),
+        };
+        Source {
+            path: path.into(),
+            text,
+            existed,
+        }
+        .replace(&contents)
+    }
+
+    fn contents(&self, config: &Config) -> Result<String> {
         let mut document: DocumentMut = self
             .text
             .parse()
@@ -384,7 +426,7 @@ impl Source {
         }
         let contents = document.to_string();
         parse(&contents, &self.path)?;
-        self.replace(&contents)
+        Ok(contents)
     }
 
     pub fn save_pins(&self, previous: &[Pin], pins: &[Pin]) -> Result<()> {
@@ -648,6 +690,61 @@ fn io_error(error: std::io::Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recovery_copy_keeps_draft_and_relative_pin_meaning_without_overwriting_active_file()
+    -> Result<()> {
+        let root = std::env::current_dir()
+            .map_err(io_error)?
+            .join(".test-tmp")
+            .join(format!("config-copy-{}", std::process::id()));
+        fs::create_dir_all(root.join("export")).map_err(io_error)?;
+        let path = root.join("config.toml");
+        let original = "[[pinned]]\nname = 'Editor'\ntarget = 'editor.exe'\n";
+        fs::write(&path, original).map_err(io_error)?;
+        let source = Source {
+            path: path.clone(),
+            text: original.into(),
+            existed: true,
+        };
+        let mut draft = source.draft()?;
+        draft.appearance.size_percent = 140;
+        draft.general.language = "tr".into();
+        // Simulate a concurrent editor: a normal save must fail, but exporting
+        // the user's draft must remain possible without losing the external edit.
+        fs::write(&path, "pinned = []\n").map_err(io_error)?;
+        assert!(source.save(&draft).is_err());
+        let exported = root.join("export/settings.toml");
+        source.save_copy(&exported, &draft)?;
+        let copy = parse(&fs::read_to_string(&exported).map_err(io_error)?, &exported)?;
+        assert_eq!(copy.appearance.size_percent, 140);
+        assert_eq!(copy.general.language, "tr");
+        assert_eq!(
+            copy.pinned[0].target,
+            root.join("editor.exe").to_string_lossy()
+        );
+        assert_eq!(
+            fs::read_to_string(&path).map_err(io_error)?,
+            "pinned = []\n"
+        );
+        assert!(source.save_copy(&path, &draft).is_err());
+        let inline = Source {
+            path: path.clone(),
+            text: "pinned = [{ name = 'Editor', target = 'editor.exe' }]\n".into(),
+            existed: true,
+        };
+        inline.save_copy(&exported, &inline.draft()?)?;
+        let copy = parse(&fs::read_to_string(&exported).map_err(io_error)?, &exported)?;
+        assert_eq!(
+            copy.pinned[0].target,
+            root.join("editor.exe").to_string_lossy()
+        );
+        fs::remove_file(exported).map_err(io_error)?;
+        fs::remove_file(path).map_err(io_error)?;
+        fs::remove_dir(root.join("export")).map_err(io_error)?;
+        fs::remove_dir(root).map_err(io_error)?;
+        Ok(())
+    }
 
     #[test]
     fn appearance_defaults_and_partial_config_are_compatible() -> Result<()> {

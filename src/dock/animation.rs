@@ -104,6 +104,10 @@ pub struct Animation {
 }
 
 impl Animation {
+    pub fn configure(&mut self, appearance: Appearance) {
+        self.speed = appearance.animation_speed_percent as f32 / 100.0;
+        self.launch_bounce = appearance.launch_bounce;
+    }
     pub fn new(hidden: bool, appearance: Appearance) -> Self {
         Self {
             motion: HashMap::new(),

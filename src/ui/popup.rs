@@ -14,6 +14,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{HSTRING, PCWSTR, Result, w};
 
 pub const UI_FONT: PCWSTR = w!("Segoe UI Variable Text");
+pub const REFRESH_PANEL: u32 = u32::MAX;
 pub const MENU_SURFACE: COLORREF = rgb(0x192437);
 pub const MENU_BORDER: COLORREF = rgb(0x41536f);
 const SS_OWNERDRAW: u32 = 0x000d;
@@ -180,6 +181,7 @@ struct Row {
 }
 
 pub struct Popup {
+    refresh_message: Option<u32>,
     handle: HMENU,
     dpi: i32,
     width: i32,
@@ -190,6 +192,7 @@ pub struct Popup {
 impl Popup {
     pub fn new(owner: HWND, width: i32) -> Result<Self> {
         Ok(Self {
+            refresh_message: None,
             handle: unsafe { CreatePopupMenu()? },
             dpi: (unsafe { GetDpiForWindow(owner) } as i32).max(1),
             width,
@@ -200,6 +203,10 @@ impl Popup {
 
     pub fn heading(&mut self, label: &str) -> Result<()> {
         self.add(0, label, Kind::Heading, false, false)
+    }
+
+    pub fn refresh_on(&mut self, message: u32) {
+        self.refresh_message = Some(message);
     }
 
     pub fn detail(&mut self, label: &str) -> Result<()> {
@@ -227,6 +234,19 @@ impl Popup {
         if let Some(row) = self.rows.last_mut() {
             row.symbol = Some(symbol);
             row.subtitle = subtitle.into();
+        }
+        let caption = HSTRING::from(format!("{label} · {subtitle}").replace('&', "&&"));
+        unsafe {
+            ModifyMenuW(
+                self.handle,
+                (self.rows.len() - 1) as u32,
+                MF_BYPOSITION
+                    | MF_STRING
+                    | if enabled { MF_ENABLED } else { MF_GRAYED }
+                    | if checked { MF_CHECKED } else { MF_UNCHECKED },
+                id as usize,
+                &caption,
+            )?;
         }
         Ok(())
     }
@@ -284,8 +304,16 @@ impl Popup {
         alignment: TRACK_POPUP_MENU_FLAGS,
         on_slide: &dyn Fn(f32) -> Result<()>,
     ) -> Result<u32> {
+        if high_contrast() {
+            return Ok(self.track_native(owner, point, alignment));
+        }
         if self.rows.iter().any(|row| row.kind == Kind::Slider) {
-            self.show_panel(owner, point, alignment, Some(on_slide))
+            match self.show_panel(owner, point, alignment, Some(on_slide)) {
+                Err(error) if error.code() == windows::Win32::Foundation::E_BOUNDS => {
+                    Ok(self.track_native(owner, point, alignment))
+                }
+                result => result,
+            }
         } else {
             Ok(self.track(owner, point, alignment))
         }
@@ -303,7 +331,11 @@ impl Popup {
             MF_SEPARATOR
         } else {
             MF_STRING
-                | if enabled { MF_ENABLED } else { MF_GRAYED }
+                | if enabled && kind != Kind::Slider {
+                    MF_ENABLED
+                } else {
+                    MF_GRAYED
+                }
                 | if checked { MF_CHECKED } else { MF_UNCHECKED }
         };
         let text = HSTRING::from(label.replace('&', "&&"));
@@ -326,6 +358,10 @@ impl Popup {
         {
             return choice;
         }
+        self.track_native(owner, point, alignment)
+    }
+
+    fn track_native(&self, owner: HWND, point: POINT, alignment: TRACK_POPUP_MENU_FLAGS) -> u32 {
         unsafe {
             let foreground = GetForegroundWindow();
             let _ = SetForegroundWindow(owner);
@@ -356,7 +392,30 @@ impl Popup {
         let px = |dip| scale(dip, self.dpi);
         let monitor = unsafe { MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST) };
         let work = crate::placement::monitor_info(monitor)?.monitorInfo.rcWork;
-        let width = px(self.width.max(220) + 20).min(work.right - work.left);
+        let font = Font::new(14, self.dpi, FW_MEDIUM);
+        let dc = unsafe { GetDC(Some(owner)) };
+        let mut measured = 0;
+        if !dc.is_invalid() {
+            let previous = unsafe { SelectObject(dc, font.0.into()) };
+            for row in &self.rows {
+                let mut size = windows::Win32::Foundation::SIZE::default();
+                let text: Vec<_> = row.label.encode_utf16().collect();
+                if unsafe { GetTextExtentPoint32W(dc, &text, &mut size).as_bool() } {
+                    measured = measured.max(if row.kind == Kind::Card {
+                        size.cx * 2 + px(72)
+                    } else {
+                        size.cx + px(64)
+                    });
+                }
+            }
+            unsafe {
+                SelectObject(dc, previous);
+                ReleaseDC(Some(owner), dc);
+            }
+        }
+        let width = px(self.width.max(220) + 20)
+            .max(measured.min(px(640)))
+            .min(work.right - work.left);
         let height = self
             .rows
             .iter()
@@ -365,7 +424,9 @@ impl Popup {
             .sum::<i32>()
             + px(20);
         if height > work.bottom - work.top || width < px(120) {
-            return Err(windows::core::Error::empty());
+            return Err(windows::core::Error::from_hresult(
+                windows::Win32::Foundation::E_BOUNDS,
+            ));
         }
         let x = if alignment.contains(TPM_RIGHTALIGN) {
             point.x - width
@@ -407,6 +468,7 @@ impl Popup {
                 error: RefCell::new(None),
             };
             let previous = GetForegroundWindow();
+            let previous_focus = GetFocus();
             let hwnd = CreateWindowExW(
                 WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_LAYERED,
                 class.lpszClassName,
@@ -422,6 +484,42 @@ impl Popup {
                 Some((&raw const panel).cast()),
             )?;
             let window = PanelWindow(hwnd);
+            InitCommonControlsEx(&INITCOMMONCONTROLSEX {
+                dwSize: size_of::<INITCOMMONCONTROLSEX>() as u32,
+                dwICC: ICC_WIN95_CLASSES,
+            })
+            .ok()?;
+            let tooltip = CreateWindowExW(
+                WS_EX_TOPMOST,
+                TOOLTIPS_CLASSW,
+                None,
+                WS_POPUP | WINDOW_STYLE(TTS_ALWAYSTIP | TTS_NOPREFIX),
+                0,
+                0,
+                0,
+                0,
+                Some(hwnd),
+                None,
+                Some(instance),
+                None,
+            )?;
+            SendMessageW(
+                tooltip,
+                TTM_SETMAXTIPWIDTH,
+                None,
+                Some(LPARAM(px(440).min(work.right - work.left) as isize)),
+            );
+            let tooltip_text: Vec<_> = self
+                .rows
+                .iter()
+                .map(|row| {
+                    HSTRING::from(if row.subtitle.is_empty() {
+                        row.label.clone()
+                    } else {
+                        format!("{}\n{}", row.label, row.subtitle)
+                    })
+                })
+                .collect();
             let region = CreateRoundRectRgn(0, 0, width + 1, height + 1, px(28), px(28));
             if region.is_invalid() || SetWindowRgn(hwnd, Some(region), false) == 0 {
                 let _ = DeleteObject(region.into());
@@ -484,6 +582,20 @@ impl Popup {
                         Some(instance),
                         None,
                     )?;
+                    let tool = TTTOOLINFOW {
+                        cbSize: size_of::<TTTOOLINFOW>() as u32,
+                        uFlags: TTF_IDISHWND | TTF_SUBCLASS,
+                        hwnd,
+                        uId: child.0 as usize,
+                        lpszText: windows::core::PWSTR(tooltip_text[index].as_ptr() as *mut _),
+                        ..Default::default()
+                    };
+                    SendMessageW(
+                        tooltip,
+                        TTM_ADDTOOLW,
+                        None,
+                        Some(LPARAM((&raw const tool) as isize)),
+                    );
                     if row.kind == Kind::Slider {
                         InitCommonControlsEx(&INITCOMMONCONTROLSEX {
                             dwSize: size_of::<INITCOMMONCONTROLSEX>() as u32,
@@ -582,6 +694,13 @@ impl Popup {
                         PostQuitMessage(msg.wParam.0 as i32);
                     }
                     break;
+                }
+                if self.refresh_message == Some(msg.message)
+                    && msg.hwnd == owner
+                    && panel.result.get().is_none()
+                {
+                    panel.result.set(Some(REFRESH_PANEL));
+                    continue;
                 }
                 if msg.hwnd == hwnd && msg.message == WM_TIMER && msg.wParam.0 == FADE_TIMER {
                     let opacity = if let Some(started) = closing {
@@ -688,6 +807,9 @@ impl Popup {
             drop(window);
             if restore_focus && !previous.0.is_null() {
                 let _ = SetForegroundWindow(previous);
+                if !previous_focus.is_invalid() && IsWindow(Some(previous_focus)).as_bool() {
+                    let _ = SetFocus(Some(previous_focus));
+                }
             }
             for msg in deferred {
                 let _ = PostMessageW(Some(msg.hwnd), msg.message, msg.wParam, msg.lParam);
@@ -1234,6 +1356,38 @@ mod tests {
     use windows::Win32::System::Threading::GetCurrentThreadId;
 
     #[test]
+    fn oversized_panels_report_layout_limit_for_native_scrollable_fallback() -> Result<()> {
+        let owner = unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                w!("STATIC"),
+                w!("Panel overflow test"),
+                WS_POPUP,
+                0,
+                0,
+                1,
+                1,
+                None,
+                None,
+                None,
+                None,
+            )?
+        };
+        let mut menu = Popup::new(owner, 400)?;
+        for id in 1..=100 {
+            menu.action(id, "A long localized action that must remain reachable")?;
+        }
+        menu.slider("Volume", 0.5, true)?;
+        let result = menu.show_panel(owner, POINT::default(), TPM_LEFTALIGN, None);
+        let _ = unsafe { DestroyWindow(owner) };
+        assert_eq!(
+            result.unwrap_err().code(),
+            windows::Win32::Foundation::E_BOUNDS
+        );
+        Ok(())
+    }
+
+    #[test]
     fn card_pairs_leave_room_for_sliders_and_actions() -> Result<()> {
         let mut menu = Popup::new(HWND::default(), 344)?;
         menu.heading("Quick Settings")?;
@@ -1309,10 +1463,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Writes native panel artwork at 100% and 150% for visual inspection"]
+    #[ignore = "Writes English/Turkish panel artwork at 100%, 150%, and 200%"]
     fn render_panel_artwork() -> Result<()> {
         unsafe {
-            let (width, height) = (1100, 750);
+            let (width, height) = (1960, 1300);
             let dc = CreateCompatibleDC(None);
             let info = BITMAPINFO {
                 bmiHeader: BITMAPINFOHEADER {
@@ -1329,11 +1483,14 @@ mod tests {
             let mut bits = std::ptr::null_mut();
             let bitmap = CreateDIBSection(Some(dc), &info, DIB_RGB_COLORS, &mut bits, None, 0)?;
             let previous = SelectObject(dc, bitmap.into());
-            for (mode, name) in [
-                (crate::theme::ThemeMode::Dark, "dark"),
-                (crate::theme::ThemeMode::Light, "light"),
+            for (mode, name, language) in [
+                (crate::theme::ThemeMode::Dark, "dark", "en"),
+                (crate::theme::ThemeMode::Light, "light", "en"),
+                (crate::theme::ThemeMode::Dark, "dark-tr", "tr"),
+                (crate::theme::ThemeMode::Light, "light-tr", "tr"),
             ] {
                 crate::theme::configure(mode);
+                crate::i18n::configure(language);
                 fill(
                     dc,
                     &RECT {
@@ -1343,26 +1500,59 @@ mod tests {
                     },
                     MENU_SURFACE,
                 );
-                for (dpi, x) in [(96, 16), (144, 455)] {
+                for (dpi, x) in [(96, 16), (144, 455), (192, 1101)] {
                     let px = |dip| scale(dip, dpi);
                     let mut menu = Popup::new(HWND::default(), 400)?;
                     menu.dpi = dpi;
-                    menu.heading("Quick Settings")?;
-                    menu.card(1, Symbol::Wifi, "Wi-Fi", "Connected", true)?;
-                    menu.card(2, Symbol::Bluetooth, "Bluetooth", "On", true)?;
-                    menu.card(3, Symbol::Display, "Display", "Brightness & color", false)?;
-                    menu.card(4, Symbol::Moon, "Focus", "Windows focus settings", false)?;
-                    menu.card(5, Symbol::Battery, "Power & battery", "Battery 73%", false)?;
+                    menu.heading(crate::i18n::text("Quick Settings"))?;
+                    menu.card(
+                        1,
+                        Symbol::Wifi,
+                        crate::i18n::text("Wi-Fi"),
+                        crate::i18n::text("Connected"),
+                        true,
+                    )?;
+                    menu.card(
+                        2,
+                        Symbol::Bluetooth,
+                        crate::i18n::text("Bluetooth"),
+                        crate::i18n::text("On"),
+                        true,
+                    )?;
+                    menu.card(
+                        3,
+                        Symbol::Display,
+                        crate::i18n::text("Display"),
+                        crate::i18n::text("Brightness & color"),
+                        false,
+                    )?;
+                    menu.card(
+                        4,
+                        Symbol::Moon,
+                        crate::i18n::text("Focus"),
+                        crate::i18n::text("Windows focus settings"),
+                        false,
+                    )?;
+                    menu.card(
+                        5,
+                        Symbol::Battery,
+                        crate::i18n::text("Power & battery"),
+                        &crate::tr!("Battery {percent}%", percent = 73),
+                        false,
+                    )?;
                     menu.card(
                         6,
                         Symbol::Settings,
-                        "Dock settings",
-                        "Appearance & apps",
+                        crate::i18n::text("Dock settings"),
+                        crate::i18n::text("Appearance & apps"),
                         false,
                     )?;
                     menu.divider()?;
-                    menu.slider("Volume", 0.66, true)?;
-                    menu.action(7, "Mute")?;
+                    menu.toggle(91, crate::i18n::text("Mobile hotspot"), Some(false))?;
+                    menu.detail(crate::i18n::text("Off"))?;
+                    menu.action(92, crate::i18n::text("Mobile hotspot settings…"))?;
+                    menu.slider(crate::i18n::text("Volume"), 0.66, true)?;
+                    menu.action(7, crate::i18n::text("Mute"))?;
                     let panel = Panel {
                         popup: &menu,
                         fonts: [

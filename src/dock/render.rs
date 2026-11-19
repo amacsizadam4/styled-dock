@@ -191,6 +191,10 @@ impl Renderer {
         self.surface.frame_ready
     }
 
+    pub fn set_opacity(&mut self, opacity: f32) {
+        self.opacity = opacity.clamp(0.0, 1.0);
+    }
+
     pub fn paint(
         &mut self,
         layout: Layout,
@@ -199,6 +203,7 @@ impl Renderer {
         marker: Option<f32>,
         hover: Option<(usize, &str)>,
         dragged: Option<usize>,
+        focused: Option<usize>,
     ) -> Result<()> {
         let size = layout.pixels;
         if size.0 == 0 || size.1 == 0 {
@@ -207,6 +212,24 @@ impl Renderer {
         self.surface.begin(size, layout.scale * 96.0)?;
         unsafe {
             self.draw_dock(scene, items, layout.dock.radius(), dragged);
+            if let Some(bounds) = focused.and_then(|index| scene.icons.get(index)) {
+                self.brush.SetColor(&color(0x90c2ff, 1.0));
+                self.surface.context.DrawRoundedRectangle(
+                    &D2D1_ROUNDED_RECT {
+                        rect: rect(
+                            bounds.x - 3.0,
+                            bounds.y - 3.0,
+                            bounds.width + 6.0,
+                            bounds.height + 6.0,
+                        ),
+                        radiusX: 8.0,
+                        radiusY: 8.0,
+                    },
+                    &self.brush,
+                    2.0,
+                    None,
+                );
+            }
             if let Some(x) = marker {
                 self.brush.SetColor(&color(0xbad7ff, 1.0));
                 self.surface.context.FillRectangle(

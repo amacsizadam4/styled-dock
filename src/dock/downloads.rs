@@ -346,6 +346,8 @@ pub fn show(owner: HWND, anchor: POINT, appearance: Appearance) -> Result<Option
                     }
                     0x26 => fan.hot.set((fan.hot.get() + 1).min(fan.entries.len() - 1)),
                     0x28 => fan.hot.set(fan.hot.get().saturating_sub(1)),
+                    0x24 => fan.hot.set(0), // Home: the folder row, at the dock edge.
+                    0x23 => fan.hot.set(fan.entries.len() - 1), // End: farthest file.
                     _ => {}
                 }
                 if fan.closing.get() {
@@ -512,6 +514,9 @@ mod tests {
                     WPARAM(71),
                     LPARAM(0),
                 );
+                // The desktop pointer may be over a file row. Select explicitly
+                // with the keyboard instead of assuming the initial hot row.
+                let _ = PostMessageW(Some(fan), WM_KEYDOWN, WPARAM(0x24), LPARAM(0));
                 let _ = PostMessageW(Some(fan), WM_KEYDOWN, WPARAM(0x0d), LPARAM(0));
             }
         }

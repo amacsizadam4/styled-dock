@@ -159,8 +159,25 @@ impl HiddenTaskbars {
                 set_taskbar_state(hwnd, state | ABS_AUTOHIDE as usize);
             }
         }
-        self.windows
-            .retain(|&(hwnd, pid)| taskbar_pid(hwnd) == Some(pid));
+        let target = self
+            .monitor
+            .as_ref()
+            .map(|name| crate::placement::select_monitor(name));
+        reconcile_hidden(
+            &mut self.windows,
+            taskbar_pid,
+            |hwnd| {
+                target.is_none_or(|target| unsafe {
+                    windows::Win32::Graphics::Gdi::MonitorFromWindow(
+                        hwnd,
+                        windows::Win32::Graphics::Gdi::MONITOR_DEFAULTTONEAREST,
+                    ) == target
+                })
+            },
+            |hwnd| {
+                let _ = unsafe { ShowWindowAsync(hwnd, SW_SHOWNA) };
+            },
+        );
         for (hwnd, pid) in taskbars() {
             if self.monitor.as_ref().is_some_and(|name| unsafe {
                 windows::Win32::Graphics::Gdi::MonitorFromWindow(hwnd, windows::Win32::Graphics::Gdi::MONITOR_DEFAULTTONEAREST)
@@ -173,6 +190,27 @@ impl HiddenTaskbars {
             }
         }
     }
+}
+
+fn reconcile_hidden(
+    windows: &mut Vec<(HWND, u32)>,
+    mut identity: impl FnMut(HWND) -> Option<u32>,
+    mut selected: impl FnMut(HWND) -> bool,
+    mut restore: impl FnMut(HWND),
+) {
+    windows.retain(|&(hwnd, pid)| {
+        if identity(hwnd) != Some(pid) {
+            return false;
+        }
+        // A disconnected display can move the dock to a fallback monitor; when
+        // it returns, release the previous monitor's taskbar instead of leaving
+        // every monitor we have visited hidden until the dock exits.
+        if !selected(hwnd) {
+            restore(hwnd);
+            return false;
+        }
+        true
+    });
 }
 
 impl Drop for HiddenTaskbars {
@@ -261,6 +299,25 @@ fn io_error(error: std::io::Error) -> Error {
 mod tests {
     use super::*;
     use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTOPRIMARY, MonitorFromWindow};
+
+    #[test]
+    fn display_changes_release_previous_taskbars_without_touching_reused_handles() {
+        let old = HWND(1usize as *mut _);
+        let current = HWND(2usize as *mut _);
+        let reused = HWND(3usize as *mut _);
+        let mut tracked = vec![(old, 10), (current, 10), (reused, 10)];
+        let mut restored = Vec::new();
+        for _ in 0..2 {
+            reconcile_hidden(
+                &mut tracked,
+                |hwnd| Some(if hwnd == reused { 20 } else { 10 }),
+                |hwnd| hwnd == current,
+                |hwnd| restored.push(hwnd),
+            );
+        }
+        assert_eq!(restored, vec![old]);
+        assert_eq!(tracked, vec![(current, 10)]);
+    }
 
     #[test]
     fn hiding_taskbar_releases_work_area_and_restores_shell_state() -> Result<()> {

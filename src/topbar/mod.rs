@@ -40,6 +40,8 @@ pub enum Action {
 }
 
 pub struct TopBar {
+    accessibility: crate::ui::accessibility::Surface,
+    accessible_keys: Vec<(String, BarIcon)>,
     hwnd: HWND,
     appbar: Option<AppBar>,
     power: Option<Power>,
@@ -103,6 +105,8 @@ impl TopBar {
             }
         };
         let mut bar = Self {
+            accessibility: crate::ui::accessibility::Surface::new(hwnd),
+            accessible_keys: Vec::new(),
             hwnd,
             appbar: None,
             power: None,
@@ -133,6 +137,7 @@ impl TopBar {
             bar.tray = Some(crate::tray::Tray::new(instance, hwnd)?);
         }
         panels::refresh_radios(hwnd);
+        crate::platform::hotspot::refresh(hwnd);
         bar.refresh_volume();
         bar.tick();
         Ok(bar)
@@ -140,6 +145,15 @@ impl TopBar {
 
     pub fn hwnd(&self) -> HWND {
         self.hwnd
+    }
+
+    pub fn focus_accessible(&self) {
+        self.accessibility.focus_first();
+    }
+
+    pub fn set_opacity(&mut self, opacity: f32) {
+        self.renderer.set_opacity(opacity);
+        self.invalidate();
     }
 
     pub fn set_visible(&mut self, visible: bool) -> Result<()> {
@@ -159,8 +173,36 @@ impl TopBar {
         Ok(())
     }
 
+    pub fn resume(&mut self) {
+        crate::platform::hotspot::refresh(self.hwnd);
+        if let Some(audio) = &mut self.audio {
+            audio.reconnect();
+        } else {
+            self.audio = Audio::new(self.hwnd).ok();
+        }
+        // A service can be absent at launch and become available after resume.
+        if self.wifi.is_none() {
+            self.wifi = Wifi::new(self.hwnd);
+        }
+        self.network = Wifi::label();
+        panels::refresh_radios(self.hwnd);
+        self.refresh_volume();
+        self.tick();
+        self.invalidate();
+    }
+
     pub fn update(&mut self, monitor: HMONITOR) -> Result<()> {
-        let screen = monitor_info(monitor)?.monitorInfo.rcMonitor;
+        // Display notifications for the two windows can arrive in either order.
+        // The dock may still hold a disconnected monitor's handle when this
+        // window receives its DPI/work-area notification first.
+        let (monitor, info) = match monitor_info(monitor) {
+            Ok(info) => (monitor, info),
+            Err(_) => {
+                let fallback = unsafe { MonitorFromWindow(self.hwnd, MONITOR_DEFAULTTOPRIMARY) };
+                (fallback, monitor_info(fallback)?)
+            }
+        };
+        let screen = info.monitorInfo.rcMonitor;
         unsafe {
             if self.monitor != monitor {
                 SetWindowPos(
@@ -249,6 +291,39 @@ impl TopBar {
 
     pub fn handle(&mut self, message: &MSG, monitor: HMONITOR) -> Result<Option<Action>> {
         match message.message {
+            crate::ui::accessibility::WM_FOCUS => {
+                self.hovered = self
+                    .accessibility
+                    .focused()
+                    .and_then(|index| self.accessible_keys.get(index))
+                    .map(|(_, icon)| *icon);
+                self.invalidate();
+            }
+            crate::ui::accessibility::WM_ACTION => {
+                if let Some((key, context)) = self.accessibility.take_action()
+                    && let Some((_, icon)) = self
+                        .accessible_keys
+                        .iter()
+                        .find(|(candidate, _)| *candidate == key)
+                    && let Some((_, range)) = self
+                        .hitboxes
+                        .iter()
+                        .find(|(candidate, _)| candidate == icon)
+                {
+                    let mut synthetic = *message;
+                    synthetic.message = if context && matches!(icon, BarIcon::Tray(_)) {
+                        WM_RBUTTONUP
+                    } else {
+                        WM_LBUTTONUP
+                    };
+                    let x = (range.start + range.end) / 2;
+                    synthetic.lParam = LPARAM(
+                        (x as u16 as u32 | ((scale(HEIGHT, self.dpi) as u16 as u32 / 2) << 16))
+                            as isize,
+                    );
+                    return self.handle(&synthetic, monitor);
+                }
+            }
             crate::tray::WM_TRAY_CHANGED => self.invalidate(),
             WM_REPOSITION => self.update(monitor)?,
             WM_PAINT => self.paint()?,
@@ -273,7 +348,7 @@ impl TopBar {
                     self.invalidate();
                 }
             }
-            panels::WM_RADIOS => self.invalidate(),
+            panels::WM_RADIOS | crate::platform::hotspot::WM_HOTSPOT => self.invalidate(),
             WM_WIFI => {
                 let network = Wifi::label();
                 if self.network != network {
@@ -282,10 +357,12 @@ impl TopBar {
                 }
             }
             WM_AUDIO_DEVICE | WM_AUDIO => {
-                if message.message == WM_AUDIO_DEVICE
-                    && let Some(audio) = &mut self.audio
-                {
-                    audio.reconnect();
+                if message.message == WM_AUDIO_DEVICE {
+                    if let Some(audio) = &mut self.audio {
+                        audio.reconnect();
+                    } else {
+                        self.audio = Audio::new(self.hwnd).ok();
+                    }
                 }
                 self.refresh_volume();
             }
@@ -309,6 +386,9 @@ impl TopBar {
                 }
             }
             WM_MOUSELEAVE => {
+                if crate::ui::accessibility::pointer_inside(self.hwnd) {
+                    return Ok(None);
+                }
                 self.tracking = false;
                 if self.hovered.take().is_some() {
                     self.invalidate();
@@ -321,8 +401,11 @@ impl TopBar {
                         if let Some(tray) = &self.tray
                             && let Some(item) = tray.state().icons().nth(index)
                         {
-                            let mut point = POINT::default();
-                            let _ = unsafe { GetCursorPos(&mut point) };
+                            let mut point = POINT {
+                                x: message.lParam.0 as i16 as i32,
+                                y: (message.lParam.0 >> 16) as i16 as i32,
+                            };
+                            let _ = unsafe { ClientToScreen(self.hwnd, &mut point) };
                             item.click(message.message, point);
                         }
                         return Ok(None);
@@ -373,6 +456,19 @@ impl TopBar {
     }
 
     fn tick(&mut self) {
+        // On clock/status refresh, recover services that were missing at startup or
+        // lost an endpoint without delivering a usable device callback.
+        if self.audio.as_ref().and_then(Audio::status).is_none() {
+            if let Some(audio) = &mut self.audio {
+                audio.reconnect();
+            } else {
+                self.audio = Audio::new(self.hwnd).ok();
+            }
+        }
+        if self.wifi.is_none() {
+            self.wifi = Wifi::new(self.hwnd);
+        }
+        self.network = Wifi::label();
         let battery = Power::status();
         if self.battery != battery {
             self.battery = battery;
@@ -450,6 +546,59 @@ impl TopBar {
                     tray: &icons,
                 },
             )?;
+            let mut boxes = self.hitboxes.clone();
+            boxes.sort_by_key(|(_, range)| range.start);
+            self.accessible_keys.clear();
+            let entries = boxes
+                .into_iter()
+                .map(|(icon, range)| {
+                    let (key, name) = match icon {
+                        BarIcon::System => ("system".into(), "Windows".into()),
+                        BarIcon::Active => ("active".into(), self.active.clone()),
+                        BarIcon::Wifi => ("wifi".into(), self.network.into()),
+                        BarIcon::Bluetooth => {
+                            ("bluetooth".into(), crate::i18n::text("Bluetooth").into())
+                        }
+                        BarIcon::Display => ("display".into(), crate::i18n::text("Display").into()),
+                        BarIcon::Battery => ("battery".into(), self.battery.label()),
+                        BarIcon::Volume => ("volume".into(), crate::i18n::text("Volume").into()),
+                        BarIcon::Clock => ("clock".into(), self.clock.clone()),
+                        BarIcon::QuickSettings => {
+                            ("quick".into(), crate::i18n::text("Quick Settings").into())
+                        }
+                        BarIcon::Tray(index) => icons.get(index).map_or_else(
+                            || {
+                                (
+                                    format!("tray:{index}"),
+                                    crate::i18n::text("App tray icon").into(),
+                                )
+                            },
+                            |icon| {
+                                (
+                                    format!("tray:{:?}", icon.menu_key()),
+                                    if icon.title.is_empty() {
+                                        crate::i18n::text("App tray icon").into()
+                                    } else {
+                                        icon.title.clone()
+                                    },
+                                )
+                            },
+                        ),
+                    };
+                    self.accessible_keys.push((key.clone(), icon));
+                    crate::ui::accessibility::Entry {
+                        key,
+                        name,
+                        bounds: RECT {
+                            left: range.start,
+                            top: 0,
+                            right: range.end,
+                            bottom: client.bottom,
+                        },
+                    }
+                })
+                .collect();
+            self.accessibility.update(entries)?;
         }
         Ok(())
     }
@@ -606,8 +755,10 @@ impl TopBar {
     }
 
     fn wifi_menu(&mut self, anchor: i32) -> Result<Option<Action>> {
+        crate::platform::hotspot::refresh(self.hwnd);
         panels::refresh_radios(self.hwnd);
         let mut menu = Popup::new(self.hwnd, 350)?;
+        menu.refresh_on(crate::platform::hotspot::WM_HOTSPOT);
         menu.heading(crate::i18n::text("Wi-Fi"))?;
         menu.toggle(1, crate::i18n::text("Wi-Fi"), panels::radio_state(false))?;
         menu.divider()?;
@@ -653,6 +804,7 @@ impl TopBar {
         menu.divider()?;
         menu.action(2, crate::i18n::text("Other networks…"))?;
         menu.action(3, crate::i18n::text("Wi-Fi settings…"))?;
+        self.hotspot_rows(&mut menu)?;
         let choice = self.track_menu(&menu, anchor)?;
         if choice >= 100
             && let Some(network) = rows.get((choice - 100) as usize)
@@ -667,9 +819,12 @@ impl TopBar {
             return Ok(Some(Action::WindowsSettings("ms-availablenetworks:")));
         }
         Ok(match choice {
+            crate::popup::REFRESH_PANEL => return self.wifi_menu(anchor),
             1 => Some(Action::System(SystemAction::ToggleWifi)),
             2 => Some(Action::WindowsSettings("ms-availablenetworks:")),
             3 => Some(Action::WindowsSettings("ms-settings:network-wifi")),
+            91 => Some(Action::System(SystemAction::ToggleHotspot)),
+            92 => Some(Action::WindowsSettings("ms-settings:network-mobilehotspot")),
             _ => None,
         })
     }
@@ -843,9 +998,11 @@ impl TopBar {
     }
 
     fn quick_settings(&mut self, anchor: i32) -> Result<Option<Action>> {
+        crate::platform::hotspot::refresh(self.hwnd);
         self.refresh_volume();
         panels::refresh_radios(self.hwnd);
         let mut menu = Popup::new(self.hwnd, 400)?;
+        menu.refresh_on(crate::platform::hotspot::WM_HOTSPOT);
         menu.heading(crate::i18n::text("Quick Settings"))?;
         let networks = panels::networks().unwrap_or_default();
         let network_name = networks
@@ -903,11 +1060,17 @@ impl TopBar {
         menu.divider()?;
         menu.action(6, crate::i18n::text("Sound settings…"))?;
         menu.action(90, crate::i18n::text("All app tray icons…"))?;
+        self.hotspot_rows(&mut menu)?;
         let choice = self.track_menu(&menu, anchor)?;
         self.apply_volume(choice)?;
         match choice {
+            crate::popup::REFRESH_PANEL => self.quick_settings(anchor),
             10 => self.wifi_menu(anchor),
             90 => self.tray_menu(anchor),
+            91 => Ok(Some(Action::System(SystemAction::ToggleHotspot))),
+            92 => Ok(Some(Action::WindowsSettings(
+                "ms-settings:network-mobilehotspot",
+            ))),
             11 => self.bluetooth_menu(anchor),
             12 => self.display_menu(anchor),
             13 => Ok(Some(Action::WindowsSettings("ms-settings:quiethours"))),
@@ -916,6 +1079,18 @@ impl TopBar {
             6 => Ok(Some(Action::WindowsSettings("ms-settings:sound"))),
             _ => Ok(None),
         }
+    }
+
+    fn hotspot_rows(&self, menu: &mut Popup) -> Result<()> {
+        let state = crate::platform::hotspot::status();
+        menu.divider()?;
+        menu.toggle(
+            91,
+            crate::i18n::text("Mobile hotspot"),
+            if state.busy { None } else { state.on },
+        )?;
+        menu.detail(crate::i18n::text(&state.detail))?;
+        menu.action(92, crate::i18n::text("Mobile hotspot settings…"))
     }
 
     fn track_menu(&mut self, menu: &Popup, anchor: i32) -> Result<u32> {
@@ -943,6 +1118,7 @@ impl TopBar {
 
 impl Drop for TopBar {
     fn drop(&mut self) {
+        crate::platform::hotspot::detach(self.hwnd);
         drop(self.tray.take());
         drop(self.appbar.take());
         drop(self.audio.take());
@@ -962,6 +1138,12 @@ unsafe extern "system" fn window_proc(
     lparam: LPARAM,
 ) -> LRESULT {
     let notification = match message {
+        WM_ACTIVATE if wparam.0 & 0xffff != WA_INACTIVE as usize => {
+            crate::ui::accessibility::activated(hwnd, HWND(lparam.0 as *mut _));
+            return unsafe { DefWindowProcW(hwnd, message, wparam, lparam) };
+        }
+        WM_COMMAND if crate::ui::accessibility::command(hwnd, wparam, lparam) => return LRESULT(0),
+        WM_DRAWITEM if crate::ui::accessibility::owner_draw(hwnd, wparam) => return LRESULT(1),
         WM_MOUSEACTIVATE => return LRESULT(MA_NOACTIVATE as isize),
         WM_CLOSE => {
             unsafe { PostQuitMessage(0) };
@@ -972,7 +1154,10 @@ unsafe extern "system" fn window_proc(
         WM_POWERBROADCAST => {
             unsafe {
                 let _ = PostMessageW(Some(hwnd), WM_POWER_STATUS, WPARAM(0), LPARAM(0));
-                if wparam.0 as u32 == PBT_APMRESUMEAUTOMATIC {
+                if matches!(
+                    wparam.0 as u32,
+                    PBT_APMRESUMEAUTOMATIC | PBT_APMRESUMESUSPEND | PBT_APMRESUMECRITICAL
+                ) {
                     let _ = PostMessageW(Some(hwnd), WM_CLOCK_CHANGED, WPARAM(0), LPARAM(0));
                 }
             }
@@ -983,4 +1168,33 @@ unsafe extern "system" fn window_proc(
     };
     let _ = unsafe { PostMessageW(Some(hwnd), notification, WPARAM(0), LPARAM(0)) };
     LRESULT(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+
+    #[test]
+    fn stale_monitor_notification_recovers_without_losing_reservation_or_focus() -> Result<()> {
+        let instance = unsafe { GetModuleHandleW(None)? }.into();
+        let monitor = unsafe { MonitorFromPoint(POINT::default(), MONITOR_DEFAULTTOPRIMARY) };
+        let foreground = unsafe { GetForegroundWindow() };
+        let mut bar = TopBar::new(instance, monitor, 0.36, false)?;
+        bar.set_visible(true)?;
+        // An invalidated display handle must fall back before its paired dock
+        // window has received and processed WM_DISPLAYCHANGE.
+        bar.update(HMONITOR::default())?;
+        assert!(!bar.monitor.is_invalid());
+        assert!(monitor_info(bar.monitor)?.monitorInfo.rcWork.top >= bar.bounds.bottom);
+        bar.resume();
+        let current = unsafe { GetForegroundWindow() };
+        // Another application may change focus during this desktop test. The
+        // invariant is that showing/recovering our bar never activates it.
+        assert!(
+            current != bar.hwnd && !unsafe { IsChild(bar.hwnd, current).as_bool() },
+            "status bar stole focus from {foreground:?}"
+        );
+        Ok(())
+    }
 }

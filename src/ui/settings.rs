@@ -22,6 +22,17 @@ use crate::popup::{self, ACCENT, Font, INK, LINE, MUTED, PANEL, SELECTED, SIDEBA
 
 pub const WM_SETTINGS_OPEN: u32 = WM_APP + 20;
 pub const WM_SETTINGS_SAVED: u32 = WM_APP + 21;
+pub const WM_SETTINGS_PREVIEW: u32 = WM_APP + 22;
+thread_local! { static PREVIEW: std::cell::Cell<Option<Appearance>> = const { std::cell::Cell::new(None) }; }
+pub fn take_preview() -> Option<Appearance> {
+    PREVIEW.take()
+}
+fn preview(owner: Option<HWND>, appearance: Appearance) {
+    if let Some(owner) = owner {
+        PREVIEW.set(Some(appearance));
+        let _ = unsafe { PostMessageW(Some(owner), WM_SETTINGS_PREVIEW, WPARAM(0), LPARAM(0)) };
+    }
+}
 
 const ID_DISPLAY: i32 = 110;
 const ID_MODE: i32 = 111;
@@ -64,6 +75,8 @@ const ID_DOWNLOADS: i32 = 147;
 const ID_INSTALLED: i32 = 148;
 const ID_LANGUAGE: i32 = 149;
 const ID_STARTUP: i32 = 150;
+const ID_COPY: i32 = 152;
+const ID_ERROR: i32 = 153;
 const TBM_GETPOS: u32 = WM_USER;
 
 const PAGES: [(&str, &str, &str, &[i32]); 6] = [
@@ -175,6 +188,7 @@ impl SettingsWindow {
         let source = Source::open()?;
         let config = source.draft()?;
         let original_language = config.general.language.clone();
+        let original_appearance = config.appearance;
         crate::i18n::configure(&config.general.language);
         crate::theme::configure(config.appearance.theme);
         let mut state = Box::new(State {
@@ -186,11 +200,12 @@ impl SettingsWindow {
             saved: false,
             captions: Vec::new(),
             original_language,
+            original_appearance,
         });
         let hwnd = unsafe {
             InitCommonControlsEx(&INITCOMMONCONTROLSEX {
                 dwSize: size_of::<INITCOMMONCONTROLSEX>() as u32,
-                dwICC: ICC_BAR_CLASSES,
+                dwICC: ICC_BAR_CLASSES | ICC_LINK_CLASS,
             })
             .ok()?;
             CreateDialogParamW(
@@ -288,6 +303,7 @@ struct State {
     saved: bool,
     captions: Vec<(HWND, String)>,
     original_language: String,
+    original_appearance: Appearance,
 }
 
 struct SettingsSkin {
@@ -313,7 +329,7 @@ impl SettingsSkin {
         let mut client = RECT::default();
         let mut guides = RECT {
             right: 115,
-            bottom: 240,
+            bottom: 260,
             ..Default::default()
         };
         unsafe {
@@ -683,7 +699,24 @@ impl State {
             "&Save and restart"
         };
         set_text(hwnd, 1, crate::i18n::text(key));
-        set_text(hwnd, ID_PATH, &self.source.path.display().to_string());
+        let path = self
+            .source
+            .path
+            .display()
+            .to_string()
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;");
+        set_text(hwnd, ID_PATH, &format!("<a>{path}</a>"));
+        let link = LITEM {
+            mask: LIF_ITEMINDEX | LIF_STATE,
+            iLink: 0,
+            state: LIS_DEFAULTCOLORS,
+            stateMask: LIS_DEFAULTCOLORS,
+            ..Default::default()
+        };
+        control_message(hwnd, ID_PATH, LM_SETITEM, 0, (&raw const link) as isize);
+        set_text(hwnd, ID_ERROR, "");
         update_opacity(hwnd, ID_DOCK_OPACITY);
         update_opacity(hwnd, ID_TOP_BAR_OPACITY);
         let _ = unsafe { InvalidateRect(Some(hwnd), None, true) };
@@ -754,28 +787,8 @@ impl State {
         Ok(())
     }
 
-    fn save(&mut self, hwnd: HWND) -> Result<()> {
-        let appearance = Appearance {
-            theme: match control_message(hwnd, ID_THEME, CB_GETCURSEL, 0, 0) {
-                1 => crate::theme::ThemeMode::Light,
-                2 => crate::theme::ThemeMode::Dark,
-                _ => crate::theme::ThemeMode::Auto,
-            },
-            size_percent: read_number(hwnd, ID_DOCK_SIZE, "dock size")?,
-            icon_size: read_number(hwnd, ID_ICON_SIZE, "icon size")?,
-            icon_spacing: read_number(hwnd, ID_ICON_SPACING, "icon spacing")?,
-            edge_padding: read_number(hwnd, ID_EDGE_PADDING, "edge padding")?,
-            label_delay_ms: read_number(hwnd, ID_LABEL_DELAY, "app label delay")?,
-            zoom_percent: read_number(hwnd, ID_HOVER_ZOOM, "hover zoom")?,
-            animation_speed_percent: read_number(hwnd, ID_ANIMATION_SPEED, "animation speed")?,
-            auto_hide_delay_ms: read_number(hwnd, ID_HIDE_DELAY, "auto-hide delay")?,
-            dock_opacity_percent: opacity(hwnd, ID_DOCK_OPACITY),
-            top_bar_opacity_percent: opacity(hwnd, ID_TOP_BAR_OPACITY),
-            launch_bounce: checked(hwnd, ID_LAUNCH_BOUNCE),
-        };
-        appearance
-            .validate()
-            .map_err(|error| Error::new(E_INVALIDARG, error))?;
+    fn read_controls(&mut self, hwnd: HWND) -> Result<()> {
+        let appearance = read_appearance(hwnd, true)?;
         let selection = selected_pin(hwnd);
         let draft = read_pin(hwnd);
         if selection.map_or(
@@ -805,6 +818,11 @@ impl State {
             .and_then(|index| crate::i18n::LANGUAGES.get(index as usize))
             .map_or("auto", |language| language.code)
             .into();
+        Ok(())
+    }
+
+    fn save(&mut self, hwnd: HWND) -> Result<()> {
+        self.read_controls(hwnd)?;
         let previous_startup = crate::startup::enabled();
         let startup = checked(hwnd, ID_STARTUP);
         if previous_startup != startup {
@@ -833,11 +851,52 @@ impl State {
         let selection = selected_pin(hwnd);
         match id {
             1 => self.save(hwnd)?,
+            ID_PATH => {
+                if self.source.path.is_file() {
+                    crate::files::reveal(&self.source.path.to_string_lossy())?;
+                } else if let Some(parent) = self.source.path.ancestors().find(|path| path.is_dir())
+                {
+                    crate::shell::launch(&parent.to_string_lossy())?;
+                }
+            }
+            ID_COPY => {
+                let mut path = [0u16; 4096];
+                let name: Vec<_> = "styled-dock-settings.toml".encode_utf16().collect();
+                path[..name.len()].copy_from_slice(&name);
+                let mut dialog = OPENFILENAMEW {
+                    lStructSize: size_of::<OPENFILENAMEW>() as u32,
+                    hwndOwner: hwnd,
+                    lpstrFilter: w!("TOML\0*.toml\0\0"),
+                    lpstrFile: PWSTR(path.as_mut_ptr()),
+                    nMaxFile: path.len() as u32,
+                    lpstrDefExt: w!("toml"),
+                    Flags: OFN_EXPLORER | OFN_NOCHANGEDIR | OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST,
+                    ..Default::default()
+                };
+                if unsafe { GetSaveFileNameW(&mut dialog).as_bool() } {
+                    let length = path.iter().position(|&ch| ch == 0).unwrap_or(path.len());
+                    self.read_controls(hwnd)?;
+                    let target =
+                        std::path::PathBuf::from(String::from_utf16_lossy(&path[..length]));
+                    self.source.save_copy(&target, &self.config)?;
+                    set_text(
+                        hwnd,
+                        ID_ERROR,
+                        crate::i18n::text("Copy saved. The active configuration has not changed."),
+                    );
+                } else if unsafe { CommDlgExtendedError().0 } != 0 {
+                    return Err(Error::new(
+                        E_FAIL,
+                        crate::i18n::text("Could not open the file picker."),
+                    ));
+                }
+            }
             ID_DEFAULTS => {
                 self.config = self.source.defaults()?;
                 self.fill(hwnd);
                 crate::i18n::configure(&self.config.general.language);
                 self.translate(hwnd);
+                preview_controls(hwnd);
             }
             ID_PINS => self.select(hwnd),
             ID_BROWSE => browse(hwnd)?,
@@ -863,6 +922,7 @@ impl State {
                     }
                 }
             }
+            ID_LAUNCH_BOUNCE => preview_controls(hwnd),
             ID_ADD => self.edit_pin(hwnd, None)?,
             ID_UPDATE if selection.is_some() => self.edit_pin(hwnd, selection)?,
             ID_UP | ID_DOWN | ID_REMOVE if let Some(index) = selection => {
@@ -893,6 +953,83 @@ impl State {
     }
 }
 
+fn read_appearance(hwnd: HWND, feedback: bool) -> Result<Appearance> {
+    let appearance = Appearance {
+        theme: match control_message(hwnd, ID_THEME, CB_GETCURSEL, 0, 0) {
+            1 => crate::theme::ThemeMode::Light,
+            2 => crate::theme::ThemeMode::Dark,
+            _ => crate::theme::ThemeMode::Auto,
+        },
+        size_percent: read_number(hwnd, ID_DOCK_SIZE, "dock size", feedback)?,
+        icon_size: read_number(hwnd, ID_ICON_SIZE, "icon size", feedback)?,
+        icon_spacing: read_number(hwnd, ID_ICON_SPACING, "icon spacing", feedback)?,
+        edge_padding: read_number(hwnd, ID_EDGE_PADDING, "edge padding", feedback)?,
+        label_delay_ms: read_number(hwnd, ID_LABEL_DELAY, "app label delay", feedback)?,
+        zoom_percent: read_number(hwnd, ID_HOVER_ZOOM, "hover zoom", feedback)?,
+        animation_speed_percent: read_number(
+            hwnd,
+            ID_ANIMATION_SPEED,
+            "animation speed",
+            feedback,
+        )?,
+        auto_hide_delay_ms: read_number(hwnd, ID_HIDE_DELAY, "auto-hide delay", feedback)?,
+        dock_opacity_percent: opacity(hwnd, ID_DOCK_OPACITY),
+        top_bar_opacity_percent: opacity(hwnd, ID_TOP_BAR_OPACITY),
+        launch_bounce: checked(hwnd, ID_LAUNCH_BOUNCE),
+    };
+    if let Err(error) = appearance.validate() {
+        let id = [
+            (ID_DOCK_SIZE, (60..=160).contains(&appearance.size_percent)),
+            (ID_ICON_SIZE, (24..=96).contains(&appearance.icon_size)),
+            (ID_ICON_SPACING, appearance.icon_spacing <= 32),
+            (ID_EDGE_PADDING, (4..=40).contains(&appearance.edge_padding)),
+            (ID_LABEL_DELAY, appearance.label_delay_ms <= 3000),
+            (ID_HOVER_ZOOM, appearance.zoom_percent <= 100),
+            (
+                ID_ANIMATION_SPEED,
+                appearance.animation_speed_percent == 0
+                    || (25..=200).contains(&appearance.animation_speed_percent),
+            ),
+            (
+                ID_HIDE_DELAY,
+                (100..=3000).contains(&appearance.auto_hide_delay_ms),
+            ),
+        ]
+        .into_iter()
+        .find(|(_, valid)| !valid)
+        .map_or(ID_DOCK_SIZE, |(id, _)| id);
+        if feedback {
+            focus_field(hwnd, id);
+        }
+        return Err(Error::new(E_INVALIDARG, error));
+    }
+    Ok(appearance)
+}
+
+fn focus_field(hwnd: HWND, id: i32) {
+    if let Some((page, _)) = PAGES
+        .iter()
+        .enumerate()
+        .find(|(_, (_, _, _, ids))| ids.contains(&id))
+    {
+        control_message(hwnd, ID_PAGES, LB_SETCURSEL, page, 0);
+        State::show_page(hwnd, page);
+    }
+    if let Ok(control) = unsafe { GetDlgItem(Some(hwnd), id) } {
+        let _ = unsafe { windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(Some(control)) };
+        control_message(hwnd, id, EM_SETSEL, 0, -1);
+    }
+}
+
+fn preview_controls(hwnd: HWND) {
+    let data = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *const State;
+    if let Some(state) = unsafe { data.as_ref() } {
+        if let Ok(appearance) = read_appearance(hwnd, false) {
+            preview(state.owner, appearance);
+        }
+    }
+}
+
 fn checked(hwnd: HWND, id: i32) -> bool {
     unsafe { IsDlgButtonChecked(hwnd, id) == BST_CHECKED.0 }
 }
@@ -917,6 +1054,12 @@ fn add_text(hwnd: HWND, id: i32, message: u32, text: &str) {
 
 fn set_text(hwnd: HWND, id: i32, text: &str) {
     let _ = unsafe { SetDlgItemTextW(hwnd, id, &HSTRING::from(text)) };
+    if id == ID_ERROR {
+        if let Ok(control) = unsafe { GetDlgItem(Some(hwnd), id) } {
+            let _ =
+                unsafe { ShowWindow(control, if text.is_empty() { SW_HIDE } else { SW_SHOWNA }) };
+        }
+    }
 }
 
 fn read_text(hwnd: HWND, id: i32) -> String {
@@ -936,8 +1079,11 @@ fn read_pin(hwnd: HWND) -> Pin {
     }
 }
 
-fn read_number(hwnd: HWND, id: i32, label: &str) -> Result<u32> {
+fn read_number(hwnd: HWND, id: i32, label: &str, feedback: bool) -> Result<u32> {
     read_text(hwnd, id).trim().parse().map_err(|_| {
+        if feedback {
+            focus_field(hwnd, id);
+        }
         Error::new(
             E_INVALIDARG,
             crate::tr!(
@@ -1025,7 +1171,15 @@ unsafe extern "system" fn dialog_proc(
                 } else {
                     &state.original_language
                 });
-                crate::theme::configure(state.config.appearance.theme);
+                let appearance = if state.saved {
+                    state.config.appearance
+                } else {
+                    state.original_appearance
+                };
+                crate::theme::configure(appearance.theme);
+                if !state.saved {
+                    preview(state.owner, state.original_appearance);
+                }
                 if let Some(owner) = state.owner {
                     unsafe {
                         let _ = PostMessageW(
@@ -1076,13 +1230,13 @@ unsafe extern "system" fn dialog_proc(
                 SetBkColor(dc, popup::adapted(if sidebar { SIDEBAR } else { PANEL }));
                 SetTextColor(
                     dc,
-                    popup::adapted(
-                        if matches!(id, ID_PAGE_DESCRIPTION | ID_PATH | 211 | 213 | 215 | 217) {
-                            MUTED
-                        } else {
-                            INK
-                        },
-                    ),
+                    popup::adapted(if id == ID_PATH {
+                        ACCENT
+                    } else if matches!(id, ID_PAGE_DESCRIPTION | 211 | 213 | 215 | 217) {
+                        MUTED
+                    } else {
+                        INK
+                    }),
                 );
             }
             if sidebar {
@@ -1098,16 +1252,43 @@ unsafe extern "system" fn dialog_proc(
             }
             1
         }
+        WM_NOTIFY if lparam.0 != 0 => {
+            let header = unsafe { &*(lparam.0 as *const NMHDR) };
+            if header.idFrom == ID_PATH as usize && matches!(header.code, NM_CLICK | NM_RETURN) {
+                let _ = unsafe {
+                    PostMessageW(Some(hwnd), WM_COMMAND, WPARAM(ID_PATH as usize), LPARAM(0))
+                };
+                return 1;
+            }
+            0
+        }
         WM_HSCROLL if lparam.0 != 0 => {
             let id = unsafe { GetDlgCtrlID(HWND(lparam.0 as *mut _)) };
             if matches!(id, ID_DOCK_OPACITY | ID_TOP_BAR_OPACITY) {
                 update_opacity(hwnd, id);
+                preview_controls(hwnd);
             }
             0
         }
         WM_COMMAND => {
             let id = (wparam.0 & 0xffff) as i32;
             let code = (wparam.0 >> 16) as u32;
+            if code == EN_CHANGE
+                && matches!(
+                    id,
+                    ID_DOCK_SIZE
+                        | ID_HOVER_ZOOM
+                        | ID_ANIMATION_SPEED
+                        | ID_HIDE_DELAY
+                        | ID_ICON_SIZE
+                        | ID_ICON_SPACING
+                        | ID_EDGE_PADDING
+                        | ID_LABEL_DELAY
+                )
+            {
+                preview_controls(hwnd);
+                return 1;
+            }
             if id == ID_LANGUAGE && code == CBN_SELCHANGE {
                 let selection = control_message(hwnd, ID_LANGUAGE, CB_GETCURSEL, 0, 0);
                 let code = selection
@@ -1128,6 +1309,7 @@ unsafe extern "system" fn dialog_proc(
                     _ => crate::theme::ThemeMode::Auto,
                 };
                 crate::theme::configure(mode);
+                preview_controls(hwnd);
                 let data = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *mut State;
                 if let Some(state) = unsafe { data.as_mut() } {
                     state.style(hwnd);
@@ -1155,7 +1337,10 @@ unsafe extern "system" fn dialog_proc(
             }
             let button = matches!(
                 id,
-                1 | ID_UP
+                1 | ID_LAUNCH_BOUNCE
+                    | ID_PATH
+                    | ID_COPY
+                    | ID_UP
                     | ID_DOWN
                     | ID_REMOVE
                     | ID_BROWSE
@@ -1171,6 +1356,11 @@ unsafe extern "system" fn dialog_proc(
             if let Some(state) = unsafe { data.as_mut() }
                 && let Err(error) = state.command(hwnd, id)
             {
+                set_text(
+                    hwnd,
+                    ID_ERROR,
+                    crate::i18n::text("Changes kept. Retry or save a copy."),
+                );
                 unsafe {
                     MessageBoxW(
                         Some(hwnd),
@@ -1205,6 +1395,58 @@ unsafe extern "system" fn theme_control(hwnd: HWND, _: LPARAM) -> windows::core:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_preview_restores_original_and_field_errors_select_the_right_page() -> Result<()> {
+        let owner = unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                w!("STATIC"),
+                w!("Preview transaction test"),
+                WS_POPUP,
+                0,
+                0,
+                1,
+                1,
+                None,
+                None,
+                None,
+                None,
+            )?
+        };
+        let settings =
+            SettingsWindow::open(unsafe { GetModuleHandleW(None)? }.into(), Some(owner))?;
+        let hwnd = settings.hwnd;
+        let original = settings._state.original_appearance;
+        take_preview();
+        set_text(hwnd, ID_DOCK_SIZE, "140");
+        set_text(hwnd, ID_HOVER_ZOOM, "80");
+        control_message(hwnd, ID_DOCK_OPACITY, TBM_SETPOS, 1, 50);
+        control_message(hwnd, ID_TOP_BAR_OPACITY, TBM_SETPOS, 1, 60);
+        preview_controls(hwnd);
+        let preview = take_preview().expect("valid changes must preview");
+        assert_eq!(preview.size_percent, 140);
+        assert_eq!(preview.zoom_percent, 80);
+        assert_eq!(preview.dock_opacity_percent, 50);
+        assert_eq!(preview.top_bar_opacity_percent, 60);
+        set_text(hwnd, ID_ICON_SIZE, "999");
+        assert!(read_appearance(hwnd, true).is_err());
+        assert_eq!(control_message(hwnd, ID_PAGES, LB_GETCURSEL, 0, 0), 3);
+        assert_eq!(
+            unsafe { windows::Win32::UI::Input::KeyboardAndMouse::GetFocus() },
+            unsafe { GetDlgItem(Some(hwnd), ID_ICON_SIZE)? }
+        );
+        assert!(
+            take_preview().is_none(),
+            "invalid values must not reach the dock"
+        );
+        unsafe {
+            SendMessageW(hwnd, WM_CLOSE, None, None);
+        }
+        assert_eq!(take_preview(), Some(original));
+        let _ = unsafe { DestroyWindow(owner) };
+        Ok(())
+    }
 
     #[test]
     fn language_preview_preserves_edits_and_cancel_does_not_save() -> Result<()> {

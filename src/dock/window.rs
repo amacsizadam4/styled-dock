@@ -23,7 +23,7 @@ use crate::animation::{Activation, Animation};
 use crate::config::{self, Pin, Source};
 use crate::layout::{Bounds, DockSize, Layout, Scene};
 use crate::placement::{
-    Placement, WM_APPBAR, WM_FULLSCREEN_CHECK, WM_REPOSITION, WM_SHELL_RESTART,
+    Placement, WM_APPBAR, WM_DESKTOP_RESUMED, WM_FULLSCREEN_CHECK, WM_REPOSITION, WM_SHELL_RESTART,
 };
 use crate::popup::Popup;
 use crate::render::Renderer;
@@ -46,7 +46,7 @@ struct DockHotkeys {
 impl DockHotkeys {
     fn new(hwnd: HWND) -> Self {
         use windows::Win32::UI::Input::KeyboardAndMouse::*;
-        let registered = [(1, b'D'), (2, b'S')]
+        let registered = [(1, b'D'), (2, b'S'), (3, b'F'), (4, b'B')]
             .into_iter()
             .filter_map(|(id, key)| unsafe {
                 RegisterHotKey(
@@ -336,28 +336,35 @@ fn dock_items(
     items
 }
 
-pub fn run() -> Result<()> {
-    if run_dock()? {
-        settings::restart()?;
-    }
-    Ok(())
+enum Exit {
+    Quit,
+    Restart,
+    Restore,
 }
 
-fn run_dock() -> Result<bool> {
+pub fn run() -> Result<()> {
+    match run_dock()? {
+        Exit::Quit => Ok(()),
+        Exit::Restart => settings::restart(),
+        Exit::Restore => crate::taskbar::restore(),
+    }
+}
+
+fn run_dock() -> Result<Exit> {
     let Some(_instance) = crate::lifecycle::Instance::acquire()? else {
-        return Ok(false);
+        return Ok(Exit::Quit);
     };
     let _ole = crate::files::Ole::new()?;
     let config = config::load()?;
     crate::i18n::configure(&config.general.language);
     if !config.general.setup_completed && !settings::first_time_setup()? {
-        return Ok(false);
+        return Ok(Exit::Quit);
     }
     let config = config::load()?;
     crate::i18n::configure(&config.general.language);
-    let appearance = config.appearance;
+    let mut appearance = config.appearance;
     crate::theme::configure(appearance.theme);
-    let dock = DockSize::new(appearance);
+    let mut dock = DockSize::new(appearance);
     let mut dock_shortcuts = config.dock;
     let mut pins = config.pinned;
     let mut settings = config.placement;
@@ -398,6 +405,7 @@ fn run_dock() -> Result<bool> {
             None,
         )?;
         let _hotkeys = DockHotkeys::new(hwnd);
+        let accessible = crate::ui::accessibility::Surface::new(hwnd);
         windows::Win32::UI::Shell::DragAcceptFiles(hwnd, true);
         let taskbar_created = RegisterWindowMessageW(w!("TaskbarCreated"));
         if taskbar_created == 0 {
@@ -426,6 +434,7 @@ fn run_dock() -> Result<bool> {
                 )
             })
             .transpose()?;
+        let notification = crate::platform::notification::Notification::new(hwnd)?;
         let mut layout = Layout::for_window(
             hwnd,
             pins.len()
@@ -524,6 +533,22 @@ fn run_dock() -> Result<bool> {
                         }
                         let marker = drop.map(|(_, _, marker)| marker);
                         let summary = hovered.map(|index| window_summary(&items[index]));
+                        accessible.update(
+                            items
+                                .iter()
+                                .zip(&scene.icons)
+                                .map(|(item, icon)| crate::ui::accessibility::Entry {
+                                    key: item.pin.target.clone(),
+                                    name: format!("{} · {}", item.pin.name, window_summary(item)),
+                                    bounds: RECT {
+                                        left: (icon.x * layout.scale) as i32,
+                                        top: (icon.y * layout.scale) as i32,
+                                        right: ((icon.x + icon.width) * layout.scale) as i32,
+                                        bottom: ((icon.y + icon.height) * layout.scale) as i32,
+                                    },
+                                })
+                                .collect(),
+                        )?;
                         renderer.paint(
                             layout,
                             &scene,
@@ -531,6 +556,7 @@ fn run_dock() -> Result<bool> {
                             marker,
                             hovered.zip(summary.as_deref()),
                             dragging.map(|press| press.index),
+                            accessible.focused(),
                         )?;
                     }
                     continue;
@@ -541,9 +567,25 @@ fn run_dock() -> Result<bool> {
             };
             match status {
                 -1 => return Err(Error::from_thread()),
-                0 => return Ok(false),
+                0 => return Ok(Exit::Quit),
                 _ => {
+                    if crate::ui::accessibility::route(&message) {
+                        continue;
+                    }
                     if message.message == WM_HOTKEY {
+                        if message.wParam.0 == 4 {
+                            if let Some(bar) = &topbar {
+                                bar.focus_accessible();
+                            }
+                            continue;
+                        }
+                        if message.wParam.0 == 3 {
+                            hidden = false;
+                            placement.show()?;
+                            accessible.focus_first();
+                            frame_pending = true;
+                            continue;
+                        }
                         if message.wParam.0 == 1 {
                             let mut menu = Popup::new(hwnd, 320)?;
                             menu.heading(crate::i18n::text("Dock apps · Ctrl+Alt+D"))?;
@@ -610,17 +652,54 @@ fn run_dock() -> Result<bool> {
                         continue;
                     }
                     if message.hwnd == hwnd {
+                        if message.message == crate::ui::accessibility::WM_ACTION {
+                            if let Some((key, context)) = accessible.take_action()
+                                && let Some(index) =
+                                    items.iter().position(|item| item.pin.target == key)
+                                && let Some(icon) = scene.icons.get(index)
+                            {
+                                let point = POINT {
+                                    x: ((icon.x + icon.width / 2.0) * layout.scale) as i32,
+                                    y: ((icon.y + icon.height / 2.0) * layout.scale) as i32,
+                                };
+                                if !context {
+                                    pressed = Some(Press {
+                                        index,
+                                        origin: point,
+                                        dragging: false,
+                                    });
+                                }
+                                message.message = if context { WM_RBUTTONUP } else { WM_LBUTTONUP };
+                                message.lParam = LPARAM(
+                                    ((point.x as u16 as u32) | ((point.y as u16 as u32) << 16))
+                                        as isize,
+                                );
+                                message.wParam = WPARAM(0);
+                            } else {
+                                continue;
+                            }
+                        }
                         let recovery_tick =
                             message.message == WM_TIMER && message.wParam.0 == RECOVERY_TIMER;
-                        if matches!(message.message, WM_REPOSITION | WM_SHELL_RESTART) {
+                        if matches!(
+                            message.message,
+                            WM_REPOSITION | WM_SHELL_RESTART | WM_DESKTOP_RESUMED
+                        ) {
                             crate::theme::refresh();
                             if let Some(taskbar) = &taskbar {
                                 taskbar.refresh();
                             }
                             if message.message == WM_SHELL_RESTART {
+                                notification.register();
                                 placement.explorer_restarted()?;
                                 if let Some(bar) = &mut topbar {
                                     bar.explorer_restarted()?;
+                                }
+                            }
+                            if message.message == WM_DESKTOP_RESUMED {
+                                watcher.refresh();
+                                if let Some(bar) = &mut topbar {
+                                    bar.resume();
                                 }
                             }
                             placement.update(items.len())?;
@@ -637,6 +716,7 @@ fn run_dock() -> Result<bool> {
                                         | WM_FULLSCREEN_CHECK
                                         | WM_REPOSITION
                                         | WM_SHELL_RESTART
+                                        | WM_DESKTOP_RESUMED
                                 ))
                         {
                             let show = !placement.fullscreen();
@@ -692,6 +772,53 @@ fn run_dock() -> Result<bool> {
                             continue;
                         }
                         match message.message {
+                            crate::ui::accessibility::WM_FOCUS => {
+                                if let Some(icon) = accessible
+                                    .focused()
+                                    .and_then(|index| scene.icons.get(index))
+                                {
+                                    hidden = false;
+                                    cursor = Some(POINT {
+                                        x: ((icon.x + icon.width / 2.0) * layout.scale) as i32,
+                                        y: ((icon.y + icon.height / 2.0) * layout.scale) as i32,
+                                    });
+                                } else {
+                                    cursor = None;
+                                }
+                                frame_pending = true;
+                                continue;
+                            }
+                            settings::WM_SETTINGS_PREVIEW => {
+                                if let Some(next) = settings::take_preview() {
+                                    appearance = next;
+                                    dock = DockSize::new(next);
+                                    placement.set_dock(dock, items.len())?;
+                                    renderer.set_opacity(next.dock_opacity_percent as f32 / 100.0);
+                                    animation.configure(next);
+                                    if let Some(bar) = &mut topbar {
+                                        bar.set_opacity(
+                                            next.top_bar_opacity_percent as f32 / 100.0,
+                                        );
+                                    }
+                                    label.reset(hwnd);
+                                    frame_pending = true;
+                                }
+                                continue;
+                            }
+                            crate::platform::notification::WM_NOTIFY_ICON => {
+                                use crate::platform::notification::Action;
+                                let event = message.lParam.0 as u32 & 0xffff;
+                                let point = client_point(LPARAM(message.wParam.0 as isize));
+                                match notification.handle(event, point)? {
+                                    Some(Action::Settings) => {
+                                        post_dock_message(hwnd, WM_SETTINGS_OPEN)
+                                    }
+                                    Some(Action::Restore) => return Ok(Exit::Restore),
+                                    Some(Action::Quit) => return Ok(Exit::Quit),
+                                    None => {}
+                                }
+                                continue;
+                            }
                             WM_DROPFILES => {
                                 use windows::Win32::UI::Shell::{
                                     DragFinish, DragQueryFileW, DragQueryPoint, HDROP,
@@ -779,7 +906,15 @@ fn run_dock() -> Result<bool> {
                                     if shape != updated {
                                         updated.apply(hwnd)?;
                                         shape = updated;
-                                        renderer.paint(layout, &scene, &items, None, None, None)?;
+                                        renderer.paint(
+                                            layout,
+                                            &scene,
+                                            &items,
+                                            None,
+                                            None,
+                                            None,
+                                            accessible.focused(),
+                                        )?;
                                     }
                                 }
                                 let choice =
@@ -796,7 +931,8 @@ fn run_dock() -> Result<bool> {
                                     Ok(Some(MenuAction::Settings)) => {
                                         post_dock_message(hwnd, WM_SETTINGS_OPEN)
                                     }
-                                    Ok(Some(MenuAction::Quit)) => return Ok(false),
+                                    Ok(Some(MenuAction::Quit)) => return Ok(Exit::Quit),
+                                    Ok(Some(MenuAction::Restore)) => return Ok(Exit::Restore),
                                     Ok(Some(MenuAction::Startup)) => {
                                         if let Err(error) = crate::startup::toggle() {
                                             show_dock_error(
@@ -805,6 +941,16 @@ fn run_dock() -> Result<bool> {
                                                     "Could not change launch at sign-in.",
                                                 ),
                                                 &error,
+                                            );
+                                        }
+                                    }
+                                    Ok(Some(MenuAction::CloseWindow(window))) => {
+                                        if IsWindow(Some(window)).as_bool() {
+                                            let _ = PostMessageW(
+                                                Some(window),
+                                                WM_CLOSE,
+                                                WPARAM(0),
+                                                LPARAM(0),
                                             );
                                         }
                                     }
@@ -861,9 +1007,10 @@ fn run_dock() -> Result<bool> {
                             }
                             WM_SETTINGS_SAVED => {
                                 let _ = ShowWindow(hwnd, SW_HIDE);
-                                return Ok(true);
+                                return Ok(Exit::Restart);
                             }
-                            WM_REPOSITION | WM_FULLSCREEN_CHECK | WM_SHELL_RESTART => continue,
+                            WM_REPOSITION | WM_FULLSCREEN_CHECK | WM_SHELL_RESTART
+                            | WM_DESKTOP_RESUMED => continue,
                             WM_RENDER_DOCK => {
                                 frame_pending = true;
                                 continue;
@@ -996,6 +1143,9 @@ fn run_dock() -> Result<bool> {
                                 cursor = Some(point);
                             }
                             WM_MOUSELEAVE => {
+                                if crate::ui::accessibility::pointer_inside(hwnd) {
+                                    continue;
+                                }
                                 label.reset(hwnd);
                                 if pressed.is_none() {
                                     cursor = None;
@@ -1194,6 +1344,8 @@ fn shortcut_placement(items: &[DockItem], dock: config::Dock) -> config::Dock {
 }
 
 enum MenuAction {
+    CloseWindow(HWND),
+    Restore,
     Launch(usize),
     Focus(usize, HWND),
     TogglePin(usize),
@@ -1248,6 +1400,10 @@ fn dock_menu(
                 title.push_str(crate::i18n::text(" (minimized)"));
             }
             menu.action(index as u32 + 4, &title)?;
+            menu.action(
+                index as u32 + 0x8000,
+                &crate::tr!("Close {name}", name = title),
+            )?;
         }
         if !item.windows.is_empty() {
             menu.action(
@@ -1309,7 +1465,13 @@ fn dock_menu(
             (0x7004, _) => Some(MenuAction::System(
                 crate::system::SystemAction::InputLanguage,
             )),
-            (0x7005 | 0x7006, _) => Some(MenuAction::Quit),
+            (0x7005, _) => Some(MenuAction::Restore),
+            (0x7006, _) => Some(MenuAction::Quit),
+            (choice, Some((_, item))) if choice >= 0x8000 => item
+                .windows
+                .get(choice as usize - 0x8000)
+                .copied()
+                .map(MenuAction::CloseWindow),
             (choice, Some((index, item))) if choice >= 4 => item
                 .windows
                 .get(choice as usize - 4)
@@ -1445,6 +1607,12 @@ unsafe extern "system" fn window_proc(
         return LRESULT(0);
     }
     match message {
+        WM_ACTIVATE if wparam.0 & 0xffff != WA_INACTIVE as usize => {
+            crate::ui::accessibility::activated(hwnd, HWND(lparam.0 as *mut _));
+            unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
+        }
+        WM_COMMAND if crate::ui::accessibility::command(hwnd, wparam, lparam) => LRESULT(0),
+        WM_DRAWITEM if crate::ui::accessibility::owner_draw(hwnd, wparam) => LRESULT(1),
         WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
         WM_PAINT => {
             // Validate the update region here and keep rendering outside the window callback.
@@ -1464,6 +1632,15 @@ unsafe extern "system" fn window_proc(
             post_dock_message(hwnd, WM_REPOSITION);
             LRESULT(0)
         }
+        WM_POWERBROADCAST => {
+            if matches!(
+                wparam.0 as u32,
+                PBT_APMRESUMEAUTOMATIC | PBT_APMRESUMESUSPEND | PBT_APMRESUMECRITICAL
+            ) {
+                post_dock_message(hwnd, WM_DESKTOP_RESUMED);
+            }
+            LRESULT(1)
+        }
         WM_APPBAR => {
             match wparam.0 as u32 {
                 ABN_POSCHANGED => post_dock_message(hwnd, WM_REPOSITION),
@@ -1481,13 +1658,78 @@ unsafe extern "system" fn window_proc(
 }
 
 fn post_dock_message(hwnd: HWND, message: u32) {
-    let _ = unsafe { PostMessageW(Some(hwnd), message, WPARAM(0), LPARAM(0)) };
+    // Display/work-area changes arrive in bursts. Keep one pending recovery per
+    // kind instead of repeatedly rebuilding the same geometry and shell state.
+    let mut queued = MSG::default();
+    unsafe {
+        if !PeekMessageW(&mut queued, Some(hwnd), message, message, PM_NOREMOVE).as_bool() {
+            let _ = PostMessageW(Some(hwnd), message, WPARAM(0), LPARAM(0));
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::layout::Bounds;
+
+    #[test]
+    fn desktop_notifications_coalesce_and_resume_without_a_top_bar() -> Result<()> {
+        let hwnd = unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                w!("STATIC"),
+                w!("Desktop recovery notification test"),
+                WS_POPUP,
+                0,
+                0,
+                1,
+                1,
+                None,
+                None,
+                None,
+                None,
+            )?
+        };
+        let result = (|| {
+            for notification in [WM_DISPLAYCHANGE, WM_SETTINGCHANGE, WM_DPICHANGED] {
+                for _ in 0..3 {
+                    unsafe {
+                        window_proc(hwnd, notification, WPARAM(0), LPARAM(0));
+                    }
+                }
+            }
+            for notification in [
+                PBT_APMRESUMEAUTOMATIC,
+                PBT_APMRESUMESUSPEND,
+                PBT_APMRESUMECRITICAL,
+            ] {
+                assert_eq!(
+                    unsafe {
+                        window_proc(
+                            hwnd,
+                            WM_POWERBROADCAST,
+                            WPARAM(notification as usize),
+                            LPARAM(0),
+                        )
+                    },
+                    LRESULT(1)
+                );
+            }
+            let mut message = MSG::default();
+            for expected in [WM_REPOSITION, WM_DESKTOP_RESUMED] {
+                assert!(unsafe {
+                    PeekMessageW(&mut message, Some(hwnd), expected, expected, PM_REMOVE).as_bool()
+                });
+                assert!(!unsafe {
+                    PeekMessageW(&mut message, Some(hwnd), expected, expected, PM_REMOVE).as_bool()
+                });
+            }
+            Ok(())
+        })();
+        let _ = unsafe { DestroyWindow(hwnd) };
+        result
+    }
 
     #[test]
     fn app_labels_wait_and_restart_for_each_hover() {

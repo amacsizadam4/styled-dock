@@ -1,6 +1,8 @@
 //! Windows shell integration and process lifecycle.
 pub(crate) mod files;
+pub(crate) mod hotspot;
 pub(crate) mod lifecycle;
+pub(crate) mod notification;
 pub(crate) mod placement;
 pub(crate) mod shell;
 pub(crate) mod startup;

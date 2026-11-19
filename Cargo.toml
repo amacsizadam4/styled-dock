@@ -1,6 +1,6 @@
 [package]
 name = "styled-dock"
-version = "1.1.0"
+version = "1.2.0"
 edition = "2024"
 description = "A macOS-inspired dock and status bar for Windows"
 license = "MIT"
@@ -14,6 +14,8 @@ toml = { version = "1", default-features = false, features = ["parse", "serde"] 
 toml_edit = "0.25"
 windows = { version = "0.62.2", features = [
     "Devices_Radios",
+    "Networking_Connectivity",
+    "Networking_NetworkOperators",
     "Win32_Devices_Bluetooth",
     "Win32_Devices_Display",
     "Win32_NetworkManagement_WiFi",
@@ -42,6 +44,7 @@ windows = { version = "0.62.2", features = [
     "Win32_System_LibraryLoader",
     "Win32_System_Ole",
     "Win32_System_Power",
+    "Win32_System_ProcessStatus",
     "Win32_System_Registry",
     "Win32_System_Shutdown",
     "Win32_System_SystemInformation",

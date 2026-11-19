@@ -33,6 +33,11 @@ bridge. Run those in a disposable Windows desktop session with the dock stopped.
 They can fail depending on Explorer and desktop state; don't hide failures or
 mark them passing without checking. Two visual helpers are ignored by default.
 
+The native end-to-end diagnostic and current Windows/display results are in
+[desktop-validation.md](docs/desktop-validation.md). It covers isolated configs,
+duplicate launch, fullscreen, normal/forced shutdown, and taskbar restoration.
+Physical sleep, Explorer restart, and display changes remain separate checks.
+
 For UI changes, also check the actual app: click, drag, use the keyboard, and try
 light/dark appearance and different display scaling. A successful build alone
 doesn't establish that the Windows integration works.

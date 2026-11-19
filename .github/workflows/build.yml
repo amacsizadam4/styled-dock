@@ -16,6 +16,8 @@ jobs:
         run: cargo +stable fmt --check
       - name: Build
         run: cargo +stable build --locked
+      - name: Build desktop diagnostic
+        run: cargo +stable build --locked --example desktop_smoke
       - name: Test dock behavior
         run: cargo +stable test --locked window::tests -- --test-threads=1
       - name: Test configuration
@@ -24,4 +26,6 @@ jobs:
         run: cargo +stable test --locked i18n::tests -- --test-threads=1
       - name: Test animation
         run: cargo +stable test --locked animation::tests -- --test-threads=1
+      - name: Test taskbar display ownership
+        run: cargo +stable test --locked display_changes_release_previous_taskbars -- --test-threads=1
       # Native shell/work-area tests need an interactive desktop; see CONTRIBUTING.md.

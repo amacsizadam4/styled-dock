@@ -1,11 +1,11 @@
 # Styled Dock status and roadmap
 
-Last reviewed: **2026-11-17**, against the v1.0 source, documentation, and local
-release artifacts.
+Last reviewed: **2026-11-19**, for v1.2.0, including phase-2/3 source,
+documentation, and build artifacts.
 
 Styled Dock has a working dock and status-bar baseline. Full Windows taskbar
 replacement remains a longer-term goal. **English and Turkish support, first-time
-setup, and a Windows startup control in Settings are now implemented locally.**
+setup, and a Windows startup control in Settings are implemented.**
 More languages and broader localization checks remain planned. Desktop reliability
 and verification follow this foundation.
 
@@ -96,6 +96,24 @@ and the initial translations pass functional and visual checks.
 
 ### 2. Stabilize the existing desktop integration
 
+**In progress — software changes included in v1.2.0.** The
+[desktop validation record](desktop-validation.md) contains the environment,
+repeat-test evidence, end-to-end matrix, reproduction commands, and pending
+physical/interactive checks. Phase 2 is not yet complete.
+
+The remaining manual checks are deferred at the user's request while phase 3
+software work proceeds.
+
+- [x] Handle resume without requiring the top bar, refresh device subscriptions,
+  and coalesce bursts of desktop recovery notifications.
+- [x] Recover a status bar receiving a stale monitor handle, and restore taskbars
+  outside the watchdog's newly selected display rather than keeping them hidden.
+- [x] Bound Explorer forwarding waits in the tray bridge and cover reentrant
+  notifications. Preserve native work-area and tray lifecycle tests.
+- [x] Add an isolated-config diagnostic for floating/reserved/auto-hide modes,
+  fullscreen recovery, duplicate launch, Settings, quit, forced termination,
+  taskbar restoration, and short CPU/working-set samples.
+
 - [ ] Resolve the reproducible work-area reservation failure and investigate
   intermittent tray lifecycle failures without excluding them to get a green run.
 - [ ] Verify taskbar hiding, top-bar reservations, normal quit, forced termination,
@@ -115,17 +133,33 @@ documented behavior. Any remaining compatibility limits must be explicit.
 
 ### 3. Finish everyday usability and accessibility
 
+**Software included in v1.2.0; verification in progress.** See
+[usability-accessibility.md](usability-accessibility.md) for usage, tests, and
+explicit hardware/assistive-technology/visual limits.
+
+- [ ] Move the Windows input-language/keyboard-layout switcher from the dock to
+  the top bar. Show the active input language/layout, offer the installed layouts,
+  and keep the indicator in sync with Windows and the focused app. Support mouse,
+  keyboard, and accessible activation; verify switching and external layout changes.
+
 - [ ] Add mobile hotspot controls to Quick Settings (control panel) and the Wi-Fi
   panel: show hotspot status, provide an on/off toggle, and link to Windows Mobile
   hotspot settings for network configuration. Keep both panels in sync, explain
   unavailable controls, and verify enable/disable behavior on supported hardware.
+  Controls, a shared status cache, disabled/busy reasons, and settings links are
+  implemented; actual hardware enable/disable remains pending.
 - [ ] Complete screen-reader/UI Automation support for drawn dock and tray controls,
   accessible names, keyboard per-window commands, and predictable focus return.
+  Native providers, keyboard navigation/context actions, and individual-window
+  commands are implemented and covered by native tests. Narrator/NVDA workflow
+  verification remains pending.
 - [ ] Review menu spacing, anchoring, focus/selection states, long labels, tooltips,
   and offscreen behavior across the dock and status panels.
-- [ ] Add live previews for size, zoom, and both opacity controls, with Cancel
+  Width measurement, full-text tooltips, native overflow/high-contrast fallback,
+  and component renders are implemented; the full interactive review remains open.
+- [x] Add live previews for size, zoom, and both opacity controls, with Cancel
   restoring the previous appearance; improve field-level validation feedback.
-- [ ] Add Styled Dock's own tray entry with Settings, Restore taskbar, and Quit;
+- [x] Add Styled Dock's own tray entry with Settings, Restore taskbar, and Quit;
   make the active config location clickable and improve recovery from save errors.
 - [ ] Verify light/dark wallpapers, transparent backgrounds, high contrast, and
   100%, 150%, and 200% scaling across the dock, menus, and every Settings page.

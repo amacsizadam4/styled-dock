@@ -15,6 +15,7 @@ pub const WM_APPBAR: u32 = WM_APP + 4;
 pub const WM_REPOSITION: u32 = WM_APP + 5;
 pub const WM_FULLSCREEN_CHECK: u32 = WM_APP + 6;
 pub const WM_SHELL_RESTART: u32 = WM_APP + 7;
+pub const WM_DESKTOP_RESUMED: u32 = WM_APP + 13;
 
 pub struct Placement {
     hwnd: HWND,
@@ -67,6 +68,11 @@ impl Placement {
 
     pub fn monitor(&self) -> HMONITOR {
         self.monitor_handle
+    }
+
+    pub fn set_dock(&mut self, dock: DockSize, count: usize) -> Result<()> {
+        self.dock = dock;
+        self.update(count)
     }
 
     pub fn update(&mut self, count: usize) -> Result<()> {

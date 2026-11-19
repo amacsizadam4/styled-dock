@@ -210,7 +210,11 @@ impl Tray {
         Self::with_cache(instance, owner, cache::path())
     }
 
-    fn with_cache(instance: HINSTANCE, owner: HWND, cache_path: Option<PathBuf>) -> Result<Self> {
+    pub(crate) fn with_cache(
+        instance: HINSTANCE,
+        owner: HWND,
+        cache_path: Option<PathBuf>,
+    ) -> Result<Self> {
         unsafe {
             CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()?;
         }
@@ -305,10 +309,20 @@ fn announce(hwnd: HWND) {
     let Some(cell) = (unsafe { pointer.as_ref() }) else {
         return;
     };
-    cell.borrow_mut().announcing = true;
+    let Ok(mut state) = cell.try_borrow_mut() else {
+        let _ = unsafe { PostMessageW(Some(hwnd), WM_REANNOUNCE, WPARAM(0), LPARAM(0)) };
+        return;
+    };
+    if state.announcing {
+        return;
+    }
+    state.announcing = true;
+    drop(state);
     prioritize(hwnd);
     request_registrations(hwnd);
-    cell.borrow_mut().announcing = false;
+    if let Ok(mut state) = cell.try_borrow_mut() {
+        state.announcing = false;
+    }
 }
 
 // Ask icon owners to register without telling Explorer or our own dock that
@@ -458,6 +472,22 @@ fn explorer() -> Option<HWND> {
     }
 }
 
+fn send_copydata(native: HWND, sender: WPARAM, data: &COPYDATASTRUCT) -> Option<LRESULT> {
+    let mut result = 0;
+    let sent = unsafe {
+        SendMessageTimeoutW(
+            native,
+            WM_COPYDATA,
+            sender,
+            LPARAM((data as *const COPYDATASTRUCT) as isize),
+            SMTO_ABORTIFHUNG | SMTO_ERRORONEXIT,
+            500,
+            Some(&mut result),
+        )
+    };
+    (sent.0 != 0).then_some(LRESULT(result as isize))
+}
+
 // SHAppBarMessage targets the first Shell_TrayWnd, just like tray icons do.
 // Its query/set replies live in memory allocated for that recipient. Forwarding
 // the packet alone reports success but leaves Explorer unable to read/write it.
@@ -500,20 +530,17 @@ fn forward_appbar(native: HWND, sender: WPARAM, data: &COPYDATASTRUCT) -> Option
         };
         // Keep this synchronous: the original caller owns the reply buffer and
         // may free it as soon as WM_COPYDATA returns.
-        let result = SendMessageW(
-            native,
-            WM_COPYDATA,
-            Some(sender),
-            Some(LPARAM((&raw const forwarded) as isize)),
-        );
+        let result = send_copydata(native, sender, &forwarded);
         let reply = SHLockShared(shared, native_pid);
         if !reply.is_null() {
-            std::ptr::copy_nonoverlapping(reply.cast::<u8>(), old.cast::<u8>(), 40);
+            if result.is_some() {
+                std::ptr::copy_nonoverlapping(reply.cast::<u8>(), old.cast::<u8>(), 40);
+            }
             let _ = SHUnlockShared(reply);
         }
         let _ = SHFreeShared(shared, native_pid);
         let _ = SHUnlockShared(old);
-        Some(result)
+        Some(result.unwrap_or(LRESULT(0)))
     }
 }
 
@@ -534,11 +561,18 @@ unsafe extern "system" fn window_proc(
     if message >= 0xc000 && message == unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) } {
         let pointer =
             unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) } as *const RefCell<TrayState>;
-        if let Some(cell) = unsafe { pointer.as_ref() }
-            && !cell.borrow().announcing
-        {
-            prioritize(hwnd);
-            cell.borrow_mut().startup_ticks = 0;
+        if let Some(cell) = unsafe { pointer.as_ref() } {
+            match cell.try_borrow_mut() {
+                Ok(mut state) if !state.announcing => {
+                    prioritize(hwnd);
+                    state.startup_ticks = 0;
+                }
+                Err(_) => {
+                    let _ =
+                        unsafe { PostMessageW(Some(hwnd), WM_REANNOUNCE, WPARAM(0), LPARAM(0)) };
+                }
+                _ => {}
+            }
         }
         return LRESULT(0);
     }
@@ -616,21 +650,10 @@ unsafe extern "system" fn window_proc(
             if let Some(result) = forward_appbar(native, wparam, data) {
                 return result;
             }
-            let mut result = 0;
-            unsafe {
-                SendMessageTimeoutW(
-                    native,
-                    message,
-                    wparam,
-                    lparam,
-                    SMTO_ABORTIFHUNG,
-                    500,
-                    Some(&mut result),
-                )
-            };
+            let result = send_copydata(native, wparam, data).unwrap_or(LRESULT(0));
             // The mirror handled notification messages even when Explorer does
             // not accept an entry (for example while its tray is restarting).
-            return LRESULT(if handled { 1 } else { result as isize });
+            return LRESULT(if handled { 1 } else { result.0 });
         }
         return LRESULT(isize::from(handled));
     }
@@ -643,6 +666,66 @@ mod tests {
     use std::cell::Cell;
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::UI::Shell::*;
+
+    #[test]
+    fn stalled_recipient_does_not_block_tray_forwarding() {
+        let (window_tx, window_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let recipient = std::thread::spawn(move || unsafe {
+            let hwnd = CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                w!("STATIC"),
+                w!("Stalled tray recipient test"),
+                WS_POPUP,
+                0,
+                0,
+                1,
+                1,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            window_tx.send(hwnd.0 as usize).unwrap();
+            // No message pump until the caller has returned from its deadline.
+            let _ = release_rx.recv_timeout(std::time::Duration::from_secs(5));
+            let _ = DestroyWindow(hwnd);
+        });
+        let hwnd = HWND(window_rx.recv().unwrap() as *mut _);
+        let packet = COPYDATASTRUCT::default();
+        let started = std::time::Instant::now();
+        let result = send_copydata(hwnd, WPARAM(0), &packet);
+        let elapsed = started.elapsed();
+        let _ = release_tx.send(());
+        recipient.join().unwrap();
+        assert!(result.is_none());
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "forwarding stalled for {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn registration_and_timer_messages_tolerate_reentrant_state_borrows() -> Result<()> {
+        let instance = unsafe { GetModuleHandleW(None)? }.into();
+        let tray = Tray::with_cache(instance, HWND::default(), None)?;
+        let held = tray.state();
+        // Native SendMessage can reenter our window procedure while the UI owns
+        // a read view. It must defer mutations rather than unwind across Win32.
+        unsafe {
+            SendMessageW(tray.hwnd, WM_REANNOUNCE, None, None);
+            SendMessageW(
+                tray.hwnd,
+                RegisterWindowMessageW(w!("TaskbarCreated")),
+                None,
+                None,
+            );
+            SendMessageW(tray.hwnd, WM_TIMER, Some(WPARAM(1)), None);
+        }
+        drop(held);
+        Ok(())
+    }
 
     thread_local! {
         static REGISTRATIONS: Cell<u32> = const { Cell::new(0) };

@@ -26,6 +26,7 @@ src/
   ui/
     settings.rs       Settings window
     app_picker.rs     Searchable Windows installed-app picker
+    accessibility.rs Native UIA/MSAA item providers and keyboard/pointer routing
     popup.rs          Shared menus, panels, sliders, and fonts
     theme.rs          Light/dark mode
     icons.rs          Vector control artwork
@@ -39,6 +40,8 @@ src/
     tray/cache.rs     Tray snapshot validation and persistence
     lifecycle.rs      Single-instance protection and graceful shutdown
     startup.rs        Optional Startup-folder shortcut
+    hotspot.rs        Shared mobile hotspot state and bounded WinRT operations
+    notification.rs   Styled Dock's own notification-area icon and menu
     system.rs         Windows shortcuts and session/power actions
 assets/topbar/        SVG status icons embedded at build time
 resources/            Windows manifest, dialog layouts, and version metadata
