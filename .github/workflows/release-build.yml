@@ -1,0 +1,37 @@
+name: Build Windows release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and verify package
+        shell: powershell
+        run: |
+          $version = $env:GITHUB_REF_NAME.TrimStart('v')
+          if ((Get-Content Cargo.toml | Select-String '^version = "([^"]+)"').Matches[0].Groups[1].Value -ne $version) {
+            throw 'Cargo version does not match the tag'
+          }
+          cargo +stable build --release --locked
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $exe = Get-Item target/release/styled-dock.exe
+          if ($exe.VersionInfo.ProductVersion -ne $version) { throw 'Executable version does not match the tag' }
+          New-Item -ItemType Directory dist | Out-Null
+          Copy-Item $exe dist/
+          Compress-Archive -Path dist/styled-dock.exe,README.md,LICENSE,config.example.toml -DestinationPath "dist/Styled-Dock-v$version-windows-x64.zip"
+          Get-ChildItem dist -File | ForEach-Object {
+            '{0}  {1}' -f (Get-FileHash -LiteralPath $_.FullName).Hash.ToLowerInvariant(), $_.Name
+          } | Set-Content -Encoding ascii dist/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64-release
+          path: dist/
+          if-no-files-found: error
