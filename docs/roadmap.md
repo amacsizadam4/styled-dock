@@ -1,7 +1,7 @@
 # Styled Dock status and roadmap
 
-Last reviewed: **2026-11-19**, for v1.2.0, including phase-2/3 source,
-documentation, and build artifacts.
+Last implementation review: **2026-11-27**, against v1.4.0 and the unreleased
+working tree. Historical verification records below retain their original dates.
 
 Styled Dock has a working dock and status-bar baseline. Full Windows taskbar
 replacement remains a longer-term goal. **English and Turkish support, first-time
@@ -63,6 +63,11 @@ drag/drop, full context-menu behavior, keyboard focus, mixed-DPI monitors, sleep
 Explorer restart, and fullscreen transitions still need hands-on verification.
 
 ## Development order
+
+### Next fix: Restore the pinned/unpinned divider
+
+- [ ] Restore the dock divider between pinned and unpinned apps. Verify on the
+  Windows desktop that it is visible at native scale when both groups are present.
 
 ### 1. Add GitHub release updates
 
@@ -194,12 +199,17 @@ previews cancel correctly; and the visual checks show no clipping or unreadable 
 
 ### 5. Deepen taskbar replacement features
 
-- [ ] Add native Jump Lists with recent documents and app tasks.
+- [ ] Verify the unreleased Jump List implementation: Recent destinations,
+  cached tasks/custom categories, and native task invocation. Pinned destinations
+  and editing remain unsupported; the custom-cache reader is best effort.
 - [ ] Add app progress indicators and overlay/unread badges.
 - [x] Add a live window picker for apps with multiple windows.
-- [ ] Add shortcuts for cycling through an app's windows.
+- [ ] Verify the implemented Ctrl+Alt+Page Down/Page Up app-window cycling on
+  the interactive desktop, including minimized windows and focus return.
 - [ ] Complete per-window identity and relaunch handling for browser profiles and
-  hosted apps; current registered AppID handling still falls back to process grouping.
+  hosted apps. The unreleased watcher retains window AppIDs, preserves relaunch
+  metadata/profile arguments in shell links, and avoids executable-only matching
+  for hosted apps. Real Edge/WhatsApp and other browser-profile checks remain open.
 - [ ] Reveal app windows while hovering during a file drag, improve packaged-app
   file activation, and verify complete file-drop workflows.
 - [ ] Define virtual-desktop behavior and display-specific window lists before

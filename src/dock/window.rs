@@ -48,19 +48,26 @@ struct DockHotkeys {
 impl DockHotkeys {
     fn new(hwnd: HWND) -> Self {
         use windows::Win32::UI::Input::KeyboardAndMouse::*;
-        let registered = [(1, b'D'), (2, b'S'), (3, b'F'), (4, b'B')]
-            .into_iter()
-            .filter_map(|(id, key)| unsafe {
-                RegisterHotKey(
-                    Some(hwnd),
-                    id,
-                    MOD_CONTROL | MOD_ALT | MOD_NOREPEAT,
-                    key as u32,
-                )
-                .is_ok()
-                .then_some(id)
-            })
-            .collect();
+        let registered = [
+            (1, b'D'),
+            (2, b'S'),
+            (3, b'F'),
+            (4, b'B'),
+            (5, 0x22),
+            (6, 0x21),
+        ]
+        .into_iter()
+        .filter_map(|(id, key)| unsafe {
+            RegisterHotKey(
+                Some(hwnd),
+                id,
+                MOD_CONTROL | MOD_ALT | MOD_NOREPEAT,
+                key as u32,
+            )
+            .is_ok()
+            .then_some(id)
+        })
+        .collect();
         Self { hwnd, registered }
     }
 }
@@ -139,6 +146,13 @@ impl DockItem {
         )
     }
 }
+fn app_divider(items: &[DockItem]) -> Option<usize> {
+    let last_pin = items.iter().rposition(|item| item.pinned && !item.utility())?;
+    items.iter().enumerate().skip(last_pin + 1).find_map(|(index, item)| {
+        (!item.pinned && !item.utility()).then_some(index)
+    })
+}
+
 struct Press {
     index: usize,
     origin: POINT,
@@ -190,7 +204,7 @@ impl Press {
                 .iter()
                 .position(|item| !item.utility() && !item.pinned)
                 .unwrap_or_else(|| items.iter().rposition(|item| item.pinned).unwrap_or(0) + 1);
-            layout.icon(first_unpinned).0 - layout.gap() / 2.0
+            layout.icon(first_unpinned).0 - (layout.gap() + layout.divider_space()) / 2.0
         };
         let pin = items[self.index].pinned || (point.x as f32 / layout.scale) < boundary;
         if pin && !items[self.index].pinned && pinned >= config::MAX_PINS {
@@ -239,7 +253,10 @@ fn dock_items(
     for app in apps {
         let index = pins
             .iter()
-            .position(|pin| watcher::matches(&pin.target, &app))
+            .position(|pin| {
+                watcher::key(&pin.target) == watcher::key(&app.target)
+                    || watcher::matches(&pin.target, &app)
+            })
             .or_else(|| {
                 pins.iter().position(|pin| {
                     shortcuts
@@ -451,7 +468,10 @@ fn run_dock() -> Result<Exit> {
         let mut renderer =
             Renderer::new(hwnd, layout, appearance.dock_opacity_percent as f32 / 100.0)?;
         let mut shortcuts = HashMap::new();
+        let mut jump_lists: HashMap<String, Vec<crate::platform::jump_list::Entry>> =
+            HashMap::new();
         let mut items = dock_items(&pins, &shortcuts, Vec::new(), &[], dock_shortcuts);
+        layout.divider = app_divider(&items);
         let mut hidden = settings.auto_hide;
         let mut animation = Animation::new(hidden, appearance);
         let (mut scene, _) = animation.frame(layout, &items, None, None, hidden, None);
@@ -470,6 +490,13 @@ fn run_dock() -> Result<Exit> {
             .filter(|item| dock_system_action(&item.pin.target).is_none())
         {
             send(Request::Icon(item.pin.target.clone()))?;
+            if !item.utility() {
+                let id = item
+                    .windows
+                    .first()
+                    .and_then(|&window| crate::platform::app_identity::window_id(window));
+                send(Request::JumpList(item.pin.target.clone(), id))?;
+            }
         }
         let watcher = Watcher::new(hwnd, settings.hide_on_fullscreen)?;
         let mut visible = !settings.hide_on_fullscreen || !placement.fullscreen();
@@ -508,6 +535,7 @@ fn run_dock() -> Result<Exit> {
                     }
                     if wait == WAIT_OBJECT_0 {
                         layout = Layout::for_window(hwnd, items.len(), dock)?;
+                        layout.divider = app_divider(&items);
                         let dragging = pressed.as_ref().filter(|press| press.dragging);
                         let hover = cursor.filter(|_| dragging.is_none());
                         let drop = dragging
@@ -601,6 +629,36 @@ fn run_dock() -> Result<Exit> {
                     }
                     if message.message == WM_HOTKEY {
                         drop(picker.take());
+                        if matches!(message.wParam.0, 5 | 6) {
+                            let foreground = GetForegroundWindow();
+                            let owner = GetAncestor(foreground, GA_ROOTOWNER);
+                            let item = items
+                                .iter()
+                                .find(|item| {
+                                    item.windows
+                                        .iter()
+                                        .any(|&window| window == foreground || window == owner)
+                                })
+                                .or_else(|| {
+                                    (foreground == hwnd)
+                                        .then(|| {
+                                            accessible.focused().and_then(|index| items.get(index))
+                                        })
+                                        .flatten()
+                                });
+                            if let Some(item) = item {
+                                if let Some(window) = watcher::cycle_window(
+                                    &item.windows,
+                                    owner,
+                                    message.wParam.0 == 6,
+                                ) {
+                                    watcher::focus(window);
+                                    animation.activate(&item.pin.target, Activation::Focus);
+                                    frame_pending = true;
+                                }
+                            }
+                            continue;
+                        }
                         if message.wParam.0 == 4 {
                             if let Some(bar) = &mut topbar {
                                 bar.focus_accessible();
@@ -951,8 +1009,25 @@ fn run_dock() -> Result<Exit> {
                                         )?;
                                     }
                                 }
-                                let choice =
-                                    dock_menu(hwnd, point, item, pins.len() < config::MAX_PINS);
+                                let choice = {
+                                    if let Some((_, item)) =
+                                        item.filter(|(_, item)| !item.utility())
+                                    {
+                                        let id = item.windows.first().and_then(|&window| {
+                                            crate::platform::app_identity::window_id(window)
+                                        });
+                                        send(Request::JumpList(item.pin.target.clone(), id))?;
+                                    }
+                                    dock_menu(
+                                        hwnd,
+                                        point,
+                                        item,
+                                        pins.len() < config::MAX_PINS,
+                                        item.and_then(|(_, item)| jump_lists.get(&item.pin.target))
+                                            .map(Vec::as_slice)
+                                            .unwrap_or(&[]),
+                                    )
+                                };
                                 cursor = None;
                                 pressed = None;
                                 frame_pending = true;
@@ -1000,6 +1075,9 @@ fn run_dock() -> Result<Exit> {
                                     }
                                     Ok(Some(MenuAction::System(action))) => {
                                         send(Request::System(action))?
+                                    }
+                                    Ok(Some(MenuAction::Jump(entry))) => {
+                                        send(Request::Jump(entry))?
                                     }
                                     Ok(Some(MenuAction::Launch(index))) => {
                                         if let Some(action) =
@@ -1081,6 +1159,7 @@ fn run_dock() -> Result<Exit> {
                                 if list_changed {
                                     let targets: HashSet<_> =
                                         items.iter().map(|item| item.pin.target.clone()).collect();
+                                    jump_lists.retain(|target, _| targets.contains(target));
                                     renderer.retain_icons(&targets);
                                     animation.retain(&targets);
                                     requested.retain(|target| targets.contains(target));
@@ -1089,6 +1168,15 @@ fn run_dock() -> Result<Exit> {
                                             && requested.insert(item.pin.target.clone())
                                         {
                                             send(Request::Icon(item.pin.target.clone()))?;
+                                            if !item.utility() {
+                                                let id = item.windows.first().and_then(|&window| {
+                                                    crate::platform::app_identity::window_id(window)
+                                                });
+                                                send(Request::JumpList(
+                                                    item.pin.target.clone(),
+                                                    id,
+                                                ))?;
+                                            }
                                         }
                                     }
                                     placement.update(items.len())?;
@@ -1114,6 +1202,9 @@ fn run_dock() -> Result<Exit> {
                                                 renderer.set_icon(target, icon);
                                                 repaint = true;
                                             }
+                                        }
+                                        Event::JumpList(target, entries) => {
+                                            jump_lists.insert(target, entries);
                                         }
                                         Event::Shortcut(shortcut, target) => {
                                             shortcuts.insert(shortcut, target);
@@ -1423,6 +1514,7 @@ fn shortcut_placement(items: &[DockItem], dock: config::Dock) -> config::Dock {
 }
 
 enum MenuAction {
+    Jump(crate::platform::jump_list::Entry),
     CloseWindow(HWND),
     Restore,
     Launch(usize),
@@ -1466,6 +1558,7 @@ fn dock_menu(
     mut point: POINT,
     item: Option<(usize, &DockItem)>,
     can_pin: bool,
+    jumps: &[crate::platform::jump_list::Entry],
 ) -> Result<Option<MenuAction>> {
     unsafe { ClientToScreen(hwnd, &mut point).ok()? };
     let mut menu = Popup::new(hwnd, 264)?;
@@ -1473,6 +1566,21 @@ fn dock_menu(
         menu.heading(&item.pin.name)?;
         menu.detail(&window_summary(item))?;
         menu.divider()?;
+        let mut section = "";
+        for (index, entry) in jumps.iter().take(40).enumerate() {
+            if entry.section != section {
+                section = &entry.section;
+                menu.heading(if entry.translate_section {
+                    crate::i18n::text(section)
+                } else {
+                    section
+                })?;
+            }
+            menu.action(0x6000 + index as u32, &entry.name)?;
+        }
+        if !jumps.is_empty() {
+            menu.divider()?;
+        }
         for (index, &window) in item.windows.iter().enumerate() {
             let mut title = watcher::title(window);
             if unsafe { IsIconic(window).as_bool() } {
@@ -1542,6 +1650,10 @@ fn dock_menu(
             (0x7003, _) => Some(MenuAction::System(crate::system::SystemAction::ShowDesktop)),
             (0x7005, _) => Some(MenuAction::Restore),
             (0x7006, _) => Some(MenuAction::Quit),
+            (choice, _) if (0x6000..0x6028).contains(&choice) => jumps
+                .get((choice - 0x6000) as usize)
+                .cloned()
+                .map(MenuAction::Jump),
             (choice, Some((_, item))) if choice >= 0x8000 => item
                 .windows
                 .get(choice as usize - 0x8000)
@@ -1870,6 +1982,7 @@ mod tests {
             height: 160.0,
             scale: 1.0,
             count: items.len(),
+            divider: app_divider(&items),
             pixels: (600, 160),
             dock: DockSize::new(Default::default()),
         };
@@ -1978,6 +2091,7 @@ mod tests {
             height: 160.0,
             scale: 1.0,
             count: items.len(),
+            divider: app_divider(&items),
             pixels: (600, 160),
             dock: DockSize::new(Default::default()),
         };
@@ -2016,6 +2130,45 @@ mod tests {
         );
     }
 
+    #[test]
+    fn hosted_app_pins_match_the_app_identity_before_browser_paths() {
+        let browser = r"C:\Edge\msedge.exe";
+        let id = r"shell:AppsFolder\MSEdge._crx_whatsapp.Profile2";
+        let pins = vec![
+            Pin {
+                name: "Edge".into(),
+                target: browser.into(),
+            },
+            Pin {
+                name: "WhatsApp".into(),
+                target: "installed-whatsapp.lnk".into(),
+            },
+        ];
+        let shortcuts = HashMap::from([("installed-whatsapp.lnk".into(), id.into())]);
+        let apps = vec![watcher::App {
+            key: watcher::key(id),
+            target: "managed-whatsapp.lnk".into(),
+            path: browser.into(),
+            name: "WhatsApp".into(),
+            windows: vec![HWND(123usize as *mut _)],
+        }];
+        let items = dock_items(&pins, &shortcuts, apps, &[], config::Dock::default());
+        let browser = items.iter().find(|item| item.pin.name == "Edge").unwrap();
+        let whatsapp = items
+            .iter()
+            .find(|item| item.pin.name == "WhatsApp")
+            .unwrap();
+        assert!(browser.windows.is_empty());
+        assert_eq!(whatsapp.windows.len(), 1);
+        assert!(whatsapp.pinned);
+        assert_eq!(
+            items
+                .iter()
+                .filter(|item| item.pin.name == "WhatsApp")
+                .count(),
+            1
+        );
+    }
     #[test]
     fn dragging_running_apps_keeps_order_on_refresh() {
         let pins = [Pin {

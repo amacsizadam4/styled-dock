@@ -251,23 +251,23 @@ fn settings(pid: u32) -> Vec<HWND> {
     state.1
 }
 
-struct Fullscreen {
+struct ForegroundWindow {
     hwnd: HWND,
     previous: HWND,
 }
-impl Fullscreen {
-    fn new(screen: RECT) -> Result<Self> {
+impl ForegroundWindow {
+    fn new(bounds: RECT, style: WINDOW_EX_STYLE, title: PCWSTR) -> Result<Self> {
         let previous = unsafe { GetForegroundWindow() };
         let hwnd = unsafe {
             CreateWindowExW(
-                WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
+                style,
                 w!("STATIC"),
-                w!("Styled Dock fullscreen smoke test"),
+                title,
                 WS_POPUP,
-                screen.left,
-                screen.top,
-                screen.right - screen.left,
-                screen.bottom - screen.top,
+                bounds.left,
+                bounds.top,
+                bounds.right - bounds.left,
+                bounds.bottom - bounds.top,
                 None,
                 None,
                 None,
@@ -279,13 +279,13 @@ impl Fullscreen {
             let _ = ShowWindow(hwnd, SW_SHOW);
             let _ = SetForegroundWindow(hwnd);
         }
-        wait("test fullscreen foreground", || unsafe {
+        wait("test window takes foreground", || unsafe {
             GetForegroundWindow() == hwnd
         })?;
         Ok(window)
     }
 }
-impl Drop for Fullscreen {
+impl Drop for ForegroundWindow {
     fn drop(&mut self) {
         let restore = unsafe { GetForegroundWindow() == self.hwnd };
         let _ = unsafe { DestroyWindow(self.hwnd) };
@@ -385,13 +385,65 @@ fn scenario(
     wait("settings close", || settings(pid).is_empty())?;
     if fullscreen {
         let screen = monitor(dock)?.rcMonitor;
-        let window = Fullscreen::new(screen)?;
-        wait("fullscreen hides dock and status bar", || {
-            !unsafe { IsWindowVisible(dock).as_bool() }
-                && (!topbar
-                    || find(w!("StyledDockTopBar"), pid)
-                        .is_some_and(|bar| !unsafe { IsWindowVisible(bar).as_bool() }))
-        })?;
+        let window = ForegroundWindow::new(
+            screen,
+            WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
+            w!("Styled Dock fullscreen smoke test"),
+        )?;
+        let bar = if topbar {
+            Some(find(w!("StyledDockTopBar"), pid).ok_or("Status bar is missing")?)
+        } else {
+            None
+        };
+        let bars_hidden = || unsafe {
+            !IsWindowVisible(dock).as_bool()
+                && bar.is_none_or(|bar| !IsWindowVisible(bar).as_bool())
+        };
+        let bars_visible = || unsafe {
+            IsWindowVisible(dock).as_bool() && bar.is_none_or(|bar| IsWindowVisible(bar).as_bool())
+        };
+        wait("fullscreen hides dock and status bar", bars_hidden)?;
+        let popup = RECT {
+            left: screen.right - 340,
+            top: screen.bottom - 170,
+            right: screen.right - 20,
+            bottom: screen.bottom - 50,
+        };
+        let notification = ForegroundWindow::new(
+            popup,
+            WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
+            w!("Styled Dock notification overlay smoke test"),
+        )?;
+        let started = Instant::now();
+        while started.elapsed() < Duration::from_millis(600) {
+            if !bars_hidden() {
+                return Err(
+                    "Dock or status bar appeared during a fullscreen notification overlay".into(),
+                );
+            }
+            if unsafe { GetForegroundWindow() } != notification.hwnd {
+                return Err(
+                    "Foreground changed unexpectedly during the notification overlay".into(),
+                );
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        drop(notification);
+        wait(
+            "fullscreen regains foreground after notification",
+            || unsafe { GetForegroundWindow() == window.hwnd },
+        )?;
+        let app_window = ForegroundWindow::new(
+            popup,
+            WS_EX_APPWINDOW,
+            w!("Styled Dock ordinary app smoke test"),
+        )?;
+        wait("switching apps restores dock and status bar", bars_visible)?;
+        if unsafe { GetForegroundWindow() } != app_window.hwnd {
+            return Err("Restoring the dock or status bar changed the foreground window".into());
+        }
+        drop(app_window);
+        wait("switching back hides dock and status bar", bars_hidden)?;
         unsafe {
             SetWindowPos(
                 window.hwnd,
@@ -403,8 +455,7 @@ fn scenario(
                 SWP_NOACTIVATE | SWP_NOZORDER,
             )?;
         }
-        wait("fullscreen exit restores dock and status bar", || unsafe { IsWindowVisible(dock).as_bool() }
-            && (!topbar || find(w!("StyledDockTopBar"), pid).is_some_and(|bar| unsafe { IsWindowVisible(bar).as_bool() })))?;
+        wait("fullscreen exit restores dock and status bar", bars_visible)?;
         drop(window);
         check_placement(dock, pid, mode, topbar)?;
     }

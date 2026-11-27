@@ -28,6 +28,7 @@ pub enum Event {
     SystemFailed(SystemAction, Error),
     Shortcut(String, String),
     WorkerFailed(Error),
+    JumpList(String, Vec<super::jump_list::Entry>),
 }
 
 pub enum Request {
@@ -36,6 +37,8 @@ pub enum Request {
     Settings(&'static str),
     System(SystemAction),
     Icon(String),
+    JumpList(String, Option<String>),
+    Jump(super::jump_list::Entry),
 }
 
 pub fn start(hwnd: HWND, pins: Vec<Pin>) -> std::io::Result<(Sender<Request>, Receiver<Event>)> {
@@ -102,6 +105,15 @@ pub fn start(hwnd: HWND, pins: Vec<Pin>) -> std::io::Result<(Sender<Request>, Re
                                 }
                             }
                             Request::Icon(target) => pending_icons.push_back(target),
+                            Request::JumpList(target, id) => {
+                                let entries = super::jump_list::read(&target, id);
+                                notify(Event::JumpList(target, entries));
+                            }
+                            Request::Jump(entry) => {
+                                if let Err(error) = super::jump_list::invoke(&entry.destination) {
+                                    notify(Event::LaunchFailed(entry.name, error));
+                                }
+                            }
                         }
                     }
                     if let Some(target) = pending_icons.pop_front()
@@ -118,22 +130,7 @@ pub fn start(hwnd: HWND, pins: Vec<Pin>) -> std::io::Result<(Sender<Request>, Re
 }
 
 fn shortcut_target(path: &str) -> Result<String> {
-    use windows::core::Interface;
-    unsafe {
-        let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)?;
-        link.cast::<IPersistFile>()?
-            .Load(&HSTRING::from(path), STGM_READ)?;
-        let mut target = [0; 4096];
-        link.GetPath(&mut target, std::ptr::null_mut(), 0)?;
-        let length = target
-            .iter()
-            .position(|&ch| ch == 0)
-            .unwrap_or(target.len());
-        if length == 0 {
-            return Err(Error::empty());
-        }
-        Ok(String::from_utf16_lossy(&target[..length]))
-    }
+    crate::platform::app_identity::shortcut_identity(path)
 }
 struct ShellBitmap(HBITMAP);
 

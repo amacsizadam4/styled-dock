@@ -14,6 +14,7 @@ src/
   i18n.rs             Extensible language registry, messages, and native captions
   dock/
     window.rs         Dock input, app list, dragging, and context menus
+    window_picker.rs  Live window previews, picker layout, and input
     layout.rs         Icon positions, sizing, and hit testing
     animation.rs      Hover, launch, and reorder animation
     render.rs         Dock drawing using Direct2D/DirectComposition
@@ -32,6 +33,8 @@ src/
     icons.rs          Vector control artwork
   platform/
     watcher.rs        Finds app windows and watches desktop events
+    app_identity.rs   Window/shortcut AppIDs and durable hosted-app relaunch links
+    jump_list.rs      Worker-side Recent lists and read-only cached task loading
     shell.rs          Launches apps/files and extracts Windows icons
     files.rs          Native file context menus and drag data
     placement.rs      Monitor choice, fullscreen detection, AppBar reservations
@@ -47,6 +50,7 @@ assets/topbar/        SVG status icons embedded at build time
 resources/            Windows manifest, dialog layouts, and version metadata
 resources/locales/    Embedded English and Turkish message catalogs
 examples/             Small Windows integration diagnostics
+scripts/dev.ps1       Windows test, launch, and smoke runner
 docs/                 Usage, architecture, roadmap, and development history
 .github/workflows/    Windows build and selected deterministic tests
 ```
@@ -68,6 +72,12 @@ The dock and top bar are custom Windows windows. Direct2D/DirectComposition draw
 the surfaces; Windows messages carry pointer, keyboard, timer, and display events.
 Layout code is separate from animation and drawing so position calculations can
 be tested without rendering the entire desktop.
+
+| Area | Start here | Focused test filter |
+| --- | --- | --- |
+| Dock interaction | [`run_dock` and `window_proc`](../src/dock/window.rs) handle the message loop, drag and click behavior, and routing to the picker and settings. | `window::tests` |
+| Live window previews | [`open_picker`](../src/dock/window.rs) calls [`Picker::open`](../src/dock/window_picker.rs). The picker owns DWM thumbnails, card geometry, and keyboard and pointer handling. | `dock::window_picker::tests` |
+| Settings | [`SettingsWindow::open`](../src/ui/settings.rs) creates the dialog and posts preview/save messages to the dock. [`resources/app.rc`](../resources/app.rc) defines the controls. | `ui::settings::tests` (interactive desktop) |
 
 Downloads uses Windows-provided file icons and shell data objects. Dragging a
 file out hands the transfer to Windows, which handles copy/move/link behavior.
@@ -97,6 +107,23 @@ atomically. Invalid configuration offers backup and reset.
 Tests live next to the relevant Rust code under `#[cfg(test)]`. Native integration
 tests need Windows and can depend on desktop/Explorer state. The CI workflow
 builds the app and runs selected tests that do not require an interactive desktop.
+
+## Unreleased app integration
+
+Window AppIDs take precedence over process identities even when AppsFolder cannot
+resolve them. `app_identity` preserves relaunch metadata in managed shell links;
+argument-bearing shortcuts without an AppID are not reduced to a host executable.
+The dock matches launch targets and resolved shortcut identities before creating
+an unpinned entry. HWND sorting gives keyboard cycling stable order despite
+activation changing EnumWindows Z order.
+
+Jump List reads and launches run on the existing STA shell worker. The UI caches
+bounded entry lists and preloads them with app icons. Opening a context menu
+requests a refresh for its next opening. Recent entries use
+`IApplicationDocumentLists`; tasks/custom categories use an optional, bounded
+version-2 CustomDestinations reader and native `IPersistStream` deserialization.
+No Explorer caches are modified. This does not expose pinned destinations or
+provide taskbar-equivalent Jump List editing.
 
 ## GitHub updater
 

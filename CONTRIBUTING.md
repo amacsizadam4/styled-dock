@@ -18,15 +18,16 @@ you're submitting and mention AI use in the pull request.
 ## Working on the code
 
 See [the architecture guide](docs/architecture.md) for the folder map. Build on
-Windows with Rust's MSVC toolchain and the Windows SDK:
+Windows with Rust's MSVC toolchain and the Windows SDK. Quit any running Styled
+Dock, then choose a check from the examples below in PowerShell.
 
 ```powershell
 cargo fmt --check
-cargo build --locked
-cargo test --locked window::tests -- --test-threads=1
-cargo test --locked config::tests -- --test-threads=1
+.\scripts\dev.ps1 Test window::tests
+.\scripts\dev.ps1 Test config::tests
 ```
 
+Use `.\scripts\dev.ps1 Launch` to build and run the dev dock for desktop checks.
 The full suite is `cargo test --locked -- --test-threads=1`. Some tests create
 native windows, temporarily change AppBar reservations, or exercise the tray
 bridge. Run those in a disposable Windows desktop session with the dock stopped.

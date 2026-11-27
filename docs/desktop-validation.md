@@ -78,6 +78,39 @@ comparisons against v1.1.0, or evidence that long-session memory growth is absen
 
 ## Reproduce
 
+### During development
+
+Quit Styled Dock, then choose the command that matches the change. Run these
+examples from the local checkout root in regular PowerShell on Windows. Use the
+logged-in desktop for checks that depend on native windows or Explorer.
+
+```powershell
+.\scripts\dev.ps1 Test config::tests
+.\scripts\dev.ps1 Test i18n::tests
+.\scripts\dev.ps1 Test dock::window_picker::tests
+.\scripts\dev.ps1 Launch
+.\scripts\dev.ps1 Smoke -Fullscreen
+```
+
+Run the relevant test filter first. For a live preview, keyboard, or focus
+change, launch the debug build and exercise the affected interaction on the
+desktop. Quit the dock to finish the launch command. For visual evidence,
+capture the affected region at native scale, and use a full desktop capture
+when checking monitor placement, clipping, or the taskbar relationship.
+
+Use Smoke for placement, fullscreen, taskbar, and lifecycle changes. It builds
+the debug dock and the diagnostic, then runs the seven-scenario matrix.
+`-Fullscreen` adds fullscreen transitions. Add `-Taskbar` to exercise actual
+taskbar hiding on a disposable desktop. The matrix covers opening Settings
+and leaves the live window picker to targeted checks.
+
+The runner writes Cargo artifacts to `%LOCALAPPDATA%\StyledDockDev\target` and
+prints a short summary with the full log path under
+`%LOCALAPPDATA%\StyledDockDev\logs`. It prints the last 35 log lines when a
+command fails. A test filter that runs zero passing tests fails the check.
+
+### Release validation
+
 Run native tests on an idle, disposable Windows desktop with the installed dock
 stopped. They temporarily affect AppBar/taskbar state and show native windows.
 
@@ -137,19 +170,39 @@ covered by that recovery claim.
   timeout/recipient-exit behavior used for cross-thread tray forwarding. Calls
   into a window on the same queue are synchronous and do not gain that timeout.
 
+## Unreleased app integration — 2026-11-27
+
+Formatting, translation-key parity, and diff whitespace checks passed.
+Shortcut identity, relaunch properties, hosted-app pin grouping, native Shell
+Link persistence, and malformed cache input still need native Windows testing.
+
+To complete Windows validation, quit the dock and run these focused checks from
+the local checkout root in regular PowerShell:
+
+```powershell
+cargo fmt --check
+.\scripts\dev.ps1 Test platform::app_identity::tests
+.\scripts\dev.ps1 Test platform::jump_list::tests
+.\scripts\dev.ps1 Test platform::watcher::tests
+.\scripts\dev.ps1 Test hosted_app_pins_match_the_app_identity_before_browser_paths
+.\scripts\dev.ps1 Test i18n::tests
+```
+
+Then check the actual app menu's Recent and task actions and capture its region.
+Cycle three windows forward/backward, including a minimized window and a dock
+keyboard selection, checking focus and wraparound. On a machine with Edge web
+apps, run Edge alongside WhatsApp and a second browser profile; verify separate
+entries, installed-shortcut matching, pin/restart, icon/name, Launch Again, and
+that closing WhatsApp leaves the main browser entry intact. These scenarios
+remain pending; no real WhatsApp/Edge installation was added for this change.
+
 ## Updater working-tree checks — 2026-11-27
 
-Windows-target `cargo check --tests` passed from Fedora with the MSVC target and
-resource build disabled in a temporary check manifest pointing at this checkout.
-This checks Rust types only; it does not validate Windows resources or execute tests.
-`git diff --check` passed. Added config coverage for the default-enabled preference
-and saving an explicit opt-out; existing Settings tests enumerate the new page.
-`scripts/test-update.ps1` provides offline parser, version, asset/digest/URL, and
-PE architecture checks, also wired into Windows CI.
+`git diff --check` passed. Config coverage includes the default-enabled updater
+preference and saving an explicit opt-out. Existing Settings tests enumerate the
+new page. `scripts/test-update.ps1` provides offline parser, version, asset,
+digest, URL, and PE architecture checks and is wired into Windows CI.
 
-Windows execution is blocked: Fedora's `smb.service` has crashed, leaving the VM's
-`S:` checkout unavailable. Restart requires administrator authentication. Native
-config/localization/Settings tests, offline PowerShell tests, the lifecycle smoke
-matrix, and English/Turkish native-scale page captures have **not run** for this
-change. Full download/install/rollback testing is also pending. Do not infer
-runtime verification from the cross-target type check.
+Native config, localization, and Settings tests, offline PowerShell tests, the
+lifecycle smoke matrix, and English/Turkish page captures were pending when this
+record was written. Full download, install, and rollback testing was also pending.

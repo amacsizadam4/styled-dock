@@ -1,7 +1,9 @@
 //! Windows shell integration and process lifecycle.
+pub(crate) mod app_identity;
 pub(crate) mod files;
 pub(crate) mod hotspot;
 pub(crate) mod input_layout;
+pub(crate) mod jump_list;
 pub(crate) mod lifecycle;
 pub(crate) mod notification;
 pub(crate) mod placement;

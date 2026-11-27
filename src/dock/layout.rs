@@ -55,6 +55,7 @@ pub struct Layout {
     pub height: f32,
     pub scale: f32,
     pub count: usize,
+    pub divider: Option<usize>,
     pub pixels: (u32, u32),
     pub dock: DockSize,
 }
@@ -70,6 +71,7 @@ impl Layout {
             height: pixels.1 as f32 / scale,
             scale,
             count,
+            divider: None,
             pixels,
             dock,
         })
@@ -78,8 +80,14 @@ impl Layout {
     pub fn icon(self, index: usize) -> (f32, f32, f32) {
         let size = self.icon_size();
         let gap = self.gap();
-        let total = self.count as f32 * (size + gap) - gap;
-        let left = (self.width - total) / 2.0 + index as f32 * (size + gap);
+        let divider = self.divider_space();
+        let total = self.count as f32 * (size + gap) - gap + divider;
+        let offset = if self.divider.is_some_and(|slot| index >= slot) {
+            divider
+        } else {
+            0.0
+        };
+        let left = (self.width - total) / 2.0 + index as f32 * (size + gap) + offset;
         (
             left,
             self.panel_top() + (self.panel_height() - size) / 2.0,
@@ -100,13 +108,25 @@ impl Layout {
         desired.min(self.width * desired / (desired + self.dock.side_room()))
     }
 
+    fn content_scale(self) -> f32 {
+        (self.base_width() - self.divider_space()) / self.dock.panel_width(self.count)
+    }
+
+    pub fn divider_space(self) -> f32 {
+        if self.divider.is_some() {
+            (6.0 * self.dock.factor).min(self.base_width() / 4.0)
+        } else {
+            0.0
+        }
+    }
+
     pub fn icon_size(self) -> f32 {
-        (self.dock.icon * self.dock.factor * self.base_width() / self.dock.panel_width(self.count))
+        (self.dock.icon * self.dock.factor * self.content_scale())
             .min((self.panel_height() - 8.0 * self.dock.factor).max(1.0))
     }
 
     pub fn gap(self) -> f32 {
-        self.dock.spacing * self.dock.factor * self.base_width() / self.dock.panel_width(self.count)
+        self.dock.spacing * self.dock.factor * self.content_scale()
     }
 }
 

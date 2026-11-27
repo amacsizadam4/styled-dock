@@ -211,7 +211,7 @@ impl Renderer {
         }
         self.surface.begin(size, layout.scale * 96.0)?;
         unsafe {
-            self.draw_dock(scene, items, layout.dock.radius(), dragged);
+            self.draw_dock(scene, items, layout, dragged);
             if let Some(bounds) = focused.and_then(|index| scene.icons.get(index)) {
                 self.brush.SetColor(&color(0x90c2ff, 1.0));
                 self.surface.context.DrawRoundedRectangle(
@@ -254,14 +254,14 @@ impl Renderer {
         &self,
         scene: &Scene,
         items: &[crate::window::DockItem],
-        radius: f32,
+        layout: Layout,
         dragged: Option<usize>,
     ) {
         unsafe {
             self.brush.SetColor(&color(0x171c2a, self.opacity));
             // Preserve the transparent clear outside the antialiased panel.
             let bounds = scene.panel;
-            let radius = radius.min(bounds.width.min(bounds.height) / 2.0);
+            let radius = layout.dock.radius().min(bounds.width.min(bounds.height) / 2.0);
             let panel = D2D1_ROUNDED_RECT {
                 rect: rect(bounds.x, bounds.y, bounds.width, bounds.height),
                 radiusX: radius,
@@ -282,12 +282,16 @@ impl Renderer {
                     "shell:Downloads" | "shell:RecycleBinFolder"
                 ) && !item.pinned
             };
-            if in_stack(&items[index]) && !in_stack(&items[index - 1]) {
+            if layout.divider == Some(index)
+                || (in_stack(&items[index]) && !in_stack(&items[index - 1]))
+            {
                 let left = scene.icons[index - 1];
                 let right = scene.icons[index];
-                let x = (left.x + left.width + right.x) / 2.0;
+                let x = (((left.x + left.width + right.x) / 2.0) * layout.scale).floor()
+                    / layout.scale
+                    + 0.5 / layout.scale;
                 unsafe {
-                    self.brush.SetColor(&color(0xe3edf9, 0.35));
+                    self.brush.SetColor(&color(0xe3edf9, 0.52));
                     self.surface.context.DrawLine(
                         Vector2 {
                             X: x,
@@ -298,7 +302,7 @@ impl Renderer {
                             Y: scene.panel.y + scene.panel.height - 14.0,
                         },
                         &self.brush,
-                        1.0,
+                        1.0 / layout.scale,
                         None,
                     );
                 }

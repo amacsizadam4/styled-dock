@@ -1,7 +1,9 @@
 use std::mem::{size_of, size_of_val};
 
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT};
-use windows::Win32::Graphics::Dwm::{DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute};
+use windows::Win32::Graphics::Dwm::{
+    DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute,
+};
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Shell::*;
@@ -21,6 +23,7 @@ pub struct Placement {
     hwnd: HWND,
     monitor: String,
     monitor_handle: HMONITOR,
+    fullscreen_window: HWND,
     appbar: Option<AppBar>,
     bounds: RECT,
     dock: DockSize,
@@ -46,6 +49,7 @@ impl Placement {
             hwnd,
             monitor,
             monitor_handle: HMONITOR::default(),
+            fullscreen_window: HWND::default(),
             appbar: None,
             bounds: RECT::default(),
             dock,
@@ -137,12 +141,16 @@ impl Placement {
         Ok(())
     }
 
-    pub fn fullscreen(&self) -> bool {
-        fullscreen_window(
-            unsafe { GetForegroundWindow() },
-            self.hwnd,
-            self.monitor_handle,
-        )
+    pub fn fullscreen(&mut self) -> bool {
+        let foreground = unsafe { GetForegroundWindow() };
+        if fullscreen_window(foreground, self.hwnd, self.monitor_handle) {
+            self.fullscreen_window = foreground;
+        } else if !transient_foreground(foreground)
+            || !fullscreen_window(self.fullscreen_window, self.hwnd, self.monitor_handle)
+        {
+            self.fullscreen_window = HWND::default();
+        }
+        self.fullscreen_window != HWND::default()
     }
 
     pub fn reveal_at(&self, point: POINT) -> bool {
@@ -177,11 +185,24 @@ fn at_reveal_edge(bounds: RECT, point: POINT) -> bool {
         && point.y < bounds.bottom
 }
 
+fn transient_foreground(hwnd: HWND) -> bool {
+    // Windows can report no foreground window while activation changes. A
+    // notification popup can also briefly become foreground over a game.
+    if hwnd == HWND::default() {
+        return true;
+    }
+    let style = WINDOW_EX_STYLE(unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) } as u32);
+    style.contains(WS_EX_TOPMOST)
+        && !style.contains(WS_EX_APPWINDOW)
+        && (style & (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE)).0 != 0
+}
+
 fn fullscreen_window(foreground: HWND, dock: HWND, monitor: HMONITOR) -> bool {
     unsafe {
         if foreground.0.is_null()
             || foreground == dock
             || foreground == GetShellWindow()
+            || !IsWindowVisible(foreground).as_bool()
             || IsIconic(foreground).as_bool()
             || MonitorFromWindow(foreground, MONITOR_DEFAULTTONULL) != monitor
         {
@@ -191,6 +212,18 @@ fn fullscreen_window(foreground: HWND, dock: HWND, monitor: HMONITOR) -> bool {
         // video transition. Inspect the foreground window's current bounds.
         let style = WINDOW_STYLE(GetWindowLongPtrW(foreground, GWL_STYLE) as u32);
         if IsZoomed(foreground).as_bool() && style.contains(WS_CAPTION) {
+            return false;
+        }
+        let mut cloaked = 0u32;
+        if DwmGetWindowAttribute(
+            foreground,
+            DWMWA_CLOAKED,
+            (&raw mut cloaked).cast(),
+            size_of_val(&cloaked) as u32,
+        )
+        .is_ok()
+            && cloaked != 0
+        {
             return false;
         }
         let Ok(info) = monitor_info(monitor) else {

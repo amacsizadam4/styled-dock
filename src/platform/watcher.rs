@@ -198,29 +198,27 @@ unsafe extern "system" fn collect_window(hwnd: HWND, data: LPARAM) -> BOOL {
             };
             identity = packaged;
         }
-        if let Some(id) = window_app_id(hwnd) {
-            let target = windows::core::HSTRING::from(format!("shell:AppsFolder\\{id}"));
-            if unsafe {
-                windows::Win32::UI::Shell::SHCreateItemFromParsingName::<
-                    _,
-                    _,
-                    windows::Win32::UI::Shell::IShellItem,
-                >(&target, None)
-            }
-            .is_ok()
-            {
-                identity.app_id = Some(id);
-            }
+        let explicit_id = crate::platform::app_identity::window_id(hwnd);
+        if let Some(id) = &explicit_id {
+            identity.app_id = Some(id.clone());
         }
-        let target = identity.app_id.as_ref().map_or_else(
+        let identity_target = identity.app_id.as_ref().map_or_else(
             || identity.path.clone(),
             |id| format!("shell:AppsFolder\\{id}"),
         );
-        let key = key(&target);
+        let relaunch = explicit_id
+            .as_ref()
+            .and_then(|id| crate::platform::app_identity::relaunch_link(hwnd, id, &title));
+        let target = relaunch
+            .as_ref()
+            .map_or_else(|| identity_target.clone(), |(target, _)| target.clone());
+        let key = key(&identity_target);
         if let Some(app) = scan.apps.iter_mut().find(|app| app.key == key) {
             app.windows.push(hwnd);
         } else {
-            let name = if identity.app_id.is_some() {
+            let name = if let Some((_, name)) = relaunch {
+                name
+            } else if identity.app_id.is_some() {
                 title
             } else {
                 Path::new(&identity.path)
@@ -322,30 +320,6 @@ pub fn key(target: &str) -> String {
     target.trim_start_matches(r"\\?\").to_lowercase()
 }
 
-fn window_app_id(hwnd: HWND) -> Option<String> {
-    use windows::Win32::System::Com::CoTaskMemFree;
-    use windows::Win32::System::Com::StructuredStorage::{
-        PropVariantClear, PropVariantToStringAlloc,
-    };
-    use windows::Win32::UI::Shell::PropertiesSystem::{
-        IPropertyStore, SHGetPropertyStoreForWindow,
-    };
-    unsafe {
-        let store: IPropertyStore = SHGetPropertyStoreForWindow(hwnd).ok()?;
-        let key = windows::Win32::Foundation::PROPERTYKEY {
-            fmtid: windows::core::GUID::from_u128(0x9f4c2855_9f79_4b39_a8d0_e1d42de1d5f3),
-            pid: 5,
-        };
-        let mut value = store.GetValue(&key).ok()?;
-        let text = PropVariantToStringAlloc(&value);
-        let _ = PropVariantClear(&mut value);
-        let text = text.ok()?;
-        let result = text.to_string().ok().filter(|text| !text.is_empty());
-        CoTaskMemFree(Some(text.0.cast()));
-        result
-    }
-}
-
 fn executable(path: &str) -> &str {
     Path::new(path)
         .file_name()
@@ -355,7 +329,7 @@ fn executable(path: &str) -> &str {
 
 pub fn matches(target: &str, app: &App) -> bool {
     let target = key(target);
-    target == app.key || target == key(&app.path)
+    target == app.key || ((app.key == key(&app.path) || key(&app.target) == key(&app.path)) && target == key(&app.path))
         // The default Windows Notepad launcher can open the packaged Notepad.
         || (app.key.starts_with("shell:appsfolder\\microsoft.windowsnotepad_")
             && executable(&target) == "notepad.exe"
@@ -431,5 +405,67 @@ pub fn focus(window: HWND) {
                 dwTimeout: 0,
             });
         }
+    }
+}
+
+/// HWND order remains stable when activation changes the enumeration's Z order.
+pub fn cycle_window(windows: &[HWND], active: HWND, reverse: bool) -> Option<HWND> {
+    let mut windows: Vec<_> = windows
+        .iter()
+        .copied()
+        .filter(|&window| unsafe { IsWindow(Some(window)).as_bool() })
+        .collect();
+    windows.sort_by_key(|window| window.0 as usize);
+    windows.dedup();
+    cycle_index(
+        windows.len(),
+        windows.iter().position(|&window| window == active),
+        reverse,
+    )
+    .map(|index| windows[index])
+}
+
+fn cycle_index(count: usize, active: Option<usize>, reverse: bool) -> Option<usize> {
+    if count == 0 {
+        return None;
+    }
+    Some(match active {
+        Some(index) if reverse => (index + count - 1) % count,
+        Some(index) => (index + 1) % count,
+        None if reverse => count - 1,
+        None => 0,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn cycling_wraps_in_both_directions_and_handles_missing_windows() {
+        assert_eq!(cycle_index(3, Some(2), false), Some(0));
+        assert_eq!(cycle_index(3, Some(0), true), Some(2));
+        assert_eq!(cycle_index(3, Some(1), false), Some(2));
+        assert_eq!(cycle_index(1, Some(0), true), Some(0));
+        assert_eq!(cycle_index(0, None, false), None);
+        assert_eq!(cycle_index(3, None, true), Some(2));
+    }
+    #[test]
+    fn hosted_apps_do_not_match_their_browser_executable() {
+        let app = App {
+            key: key(r"shell:AppsFolder\MSEdge._crx_whatsapp.Profile2"),
+            target: "whatsapp.lnk".into(),
+            path: r"C:\Edge\msedge.exe".into(),
+            name: "WhatsApp".into(),
+            windows: vec![],
+        };
+        assert!(!matches(r"C:\Edge\msedge.exe", &app));
+        assert!(matches(
+            r"shell:AppsFolder\MSEdge._crx_whatsapp.Profile2",
+            &app
+        ));
+        assert!(!matches(
+            r"shell:AppsFolder\MSEdge._crx_whatsapp.Default",
+            &app
+        ));
     }
 }

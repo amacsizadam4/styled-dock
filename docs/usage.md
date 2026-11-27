@@ -103,11 +103,38 @@ taskbars, so the watchdog cannot immediately hide them again.
 ## Remaining replacement work
 
 See [the roadmap](roadmap.md) for the complete parity checklist. This build does not yet
-implement full UI Automation for drawn dock icons, Win+number remapping, native
-Jump Lists, progress/overlay badges, or simultaneous docks on
+complete assistive-technology verification, Win+number remapping,
+progress/overlay badges, or simultaneous docks on
 multiple monitors. Tray mirroring still uses an undocumented Windows protocol;
 initial discovery depends on app registration. Taskbar suppression targets the
 dock's selected display; Explorer's auto-hide preference remains global.
+
+## Jump Lists and app identities (unreleased)
+
+Right-click an app to see its available Recent items, tasks, and custom categories.
+Availability depends on what the app publishes to Windows. The dock preloads lists
+and requests a refresh when its menu opens; reopen the menu to see a refresh that
+arrived while the menu was open. Recent files use their Windows shell open action.
+Jump List pinning/removal and Explorer's pinned-destination category are not included.
+Tasks/custom categories are a best-effort reader of Explorer's saved cache; an
+absent, unsupported, or malformed cache leaves the normal app menu usable.
+
+With an app active, **Ctrl+Alt+Page Down** selects its next window and
+**Ctrl+Alt+Page Up** selects its previous window, wrapping at either end.
+The same shortcuts work for the selected app while the dock has keyboard focus.
+Cycling includes minimized windows and restores the selected one. Order stays
+stable as focus changes. Shortcuts already claimed by another app remain unavailable.
+
+Hosted apps, including browser-installed web apps, keep their window AppUserModelID
+instead of being grouped solely by the browser executable. When Windows supplies
+relaunch information, the dock saves a shortcut under
+`%LOCALAPPDATA%\StyledDock\AppLinks` with that ID, app name, icon, and original
+profile/app arguments. Pinning and Launch Again use this shortcut. Keep these
+shortcuts when backing up or moving a config containing such pins.
+Existing pins that point directly to a browser executable still launch that browser;
+unpin an old incorrectly identified web app and pin its separate running entry.
+Apps that provide neither a registered AppsFolder target nor valid relaunch
+information may be identifiable but cannot yet be reliably relaunched.
 
 ## Updates
 

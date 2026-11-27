@@ -297,6 +297,8 @@
 "{label} (active)" = "{label} (active)"
 "{label} · {minimized} minimized" = "{label} · {minimized} minimized"
 "{width} × {height} · {scale}% scaling" = "{width} × {height} · {scale}% scaling"
+"Recent" = "Recent"
+"Tasks" = "Tasks"
 
 # GitHub updates
 "Updates" = "Updates"
