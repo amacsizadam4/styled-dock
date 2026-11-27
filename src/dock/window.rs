@@ -33,6 +33,8 @@ use crate::taskbar::TaskbarLease;
 use crate::topbar::{Action, TopBar};
 use crate::watcher::{self, WM_APPS_CHANGED, Watcher};
 
+use super::window_picker::{Input as PickerInput, Picker};
+
 const WM_RENDER_DOCK: u32 = WM_APP + 1;
 const HIDE_TIMER: usize = 1;
 const LABEL_TIMER: usize = 2;
@@ -484,6 +486,7 @@ fn run_dock() -> Result<Exit> {
 
         let mut message = MSG::default();
         let mut pressed: Option<Press> = None;
+        let mut picker: Option<Picker> = None;
         let mut cursor: Option<POINT> = None;
         let mut label = HoverLabel::default();
         let mut frame_pending = true;
@@ -522,7 +525,7 @@ fn run_dock() -> Result<Exit> {
                         (scene, frame_pending) =
                             animation.frame(layout, &items, x, held, hidden, drag);
                         let hovered = cursor
-                            .filter(|_| !hidden && pressed.is_none())
+                            .filter(|_| !hidden && pressed.is_none() && picker.is_none())
                             .and_then(|point| scene.hit(point, layout.scale));
                         let hovered = label.visible(hwnd, hovered, appearance.label_delay_ms);
                         let overlay = hovered.map(|index| scene.overlay(layout, index));
@@ -569,10 +572,32 @@ fn run_dock() -> Result<Exit> {
                 -1 => return Err(Error::from_thread()),
                 0 => return Ok(Exit::Quit),
                 _ => {
+                    if picker.as_ref().is_some_and(Picker::dismissed) {
+                        drop(picker.take());
+                    }
+                    if let Some(open) = &mut picker {
+                        match open.input(&message) {
+                            PickerInput::Ignored => {}
+                            PickerInput::Handled => continue,
+                            PickerInput::Dismiss => {
+                                drop(picker.take());
+                                continue;
+                            }
+                            PickerInput::Choose(window) => {
+                                if open.focus(window) {
+                                    animation.activate(&open.target, Activation::Focus);
+                                }
+                                drop(picker.take());
+                                frame_pending = true;
+                                continue;
+                            }
+                        }
+                    }
                     if crate::ui::accessibility::route(&message) {
                         continue;
                     }
                     if message.message == WM_HOTKEY {
+                        drop(picker.take());
                         if message.wParam.0 == 4 {
                             if let Some(bar) = &mut topbar {
                                 bar.focus_accessible();
@@ -595,12 +620,13 @@ fn run_dock() -> Result<Exit> {
                             let mut anchor = POINT::default();
                             let _ = GetCursorPos(&mut anchor);
                             let choice = menu.track(hwnd, anchor, TPM_RIGHTBUTTON);
-                            if let Some(item) = choice
-                                .checked_sub(1)
-                                .and_then(|index| items.get(index as usize))
+                            if let Some(index) = choice.checked_sub(1).map(|index| index as usize)
+                                && let Some(item) = items.get(index)
                             {
                                 if let Some(action) = dock_system_action(&item.pin.target) {
                                     send(Request::System(action))?;
+                                } else if item.windows.len() > 1 {
+                                    picker = open_picker(hwnd, &scene, layout, index, item, anchor);
                                 } else if matches!(
                                     watcher::activate(&item.windows),
                                     watcher::Activation::Missing
@@ -685,6 +711,7 @@ fn run_dock() -> Result<Exit> {
                             message.message,
                             WM_REPOSITION | WM_SHELL_RESTART | WM_DESKTOP_RESUMED
                         ) {
+                            drop(picker.take());
                             crate::theme::refresh();
                             if let Some(taskbar) = &taskbar {
                                 taskbar.refresh();
@@ -730,6 +757,7 @@ fn run_dock() -> Result<Exit> {
                                     placement.update(items.len())?;
                                     placement.show()?;
                                 } else {
+                                    drop(picker.take());
                                     let _ = ShowWindow(hwnd, SW_HIDE);
                                 }
                                 if let Some(bar) = &mut topbar {
@@ -882,6 +910,7 @@ fn run_dock() -> Result<Exit> {
                                 continue;
                             }
                             WM_SETTINGS_OPEN => {
+                                drop(picker.take());
                                 if let Some(dialog) =
                                     settings_window.as_ref().filter(|dialog| dialog.is_open())
                                 {
@@ -898,6 +927,7 @@ fn run_dock() -> Result<Exit> {
                                 continue;
                             }
                             WM_RBUTTONUP => {
+                                drop(picker.take());
                                 label.reset(hwnd);
                                 let point = client_point(message.lParam);
                                 let hovered = scene.hit(point, layout.scale);
@@ -1032,6 +1062,15 @@ fn run_dock() -> Result<Exit> {
                                     .iter()
                                     .map(|item| item.windows.len())
                                     .eq(updated.iter().map(|item| item.windows.len()));
+                                if picker.as_ref().is_some_and(|open| {
+                                    list_changed
+                                        || !updated.iter().any(|item| {
+                                            item.pin.target == open.target
+                                                && open.matches(&item.windows)
+                                        })
+                                }) {
+                                    drop(picker.take());
+                                }
                                 items = updated;
                                 if let Some(bar) = &mut topbar {
                                     bar.foreground_changed(&items);
@@ -1189,6 +1228,7 @@ fn run_dock() -> Result<Exit> {
                                 frame_pending = true;
                             }
                             WM_LBUTTONUP => {
+                                let previous = picker.take().map(|open| open.target.clone());
                                 if let Some(press) = pressed.take() {
                                     let _ =
                                         windows::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture(
@@ -1257,6 +1297,16 @@ fn run_dock() -> Result<Exit> {
                                             }
                                             continue;
                                         }
+                                        if item.windows.len() > 1 {
+                                            if previous.as_deref() != Some(&item.pin.target) {
+                                                let mut anchor = point;
+                                                let _ = ClientToScreen(hwnd, &mut anchor);
+                                                picker = open_picker(
+                                                    hwnd, &scene, layout, index, item, anchor,
+                                                );
+                                            }
+                                            continue;
+                                        }
                                         match watcher::activate(&item.windows) {
                                             watcher::Activation::Minimized => animation
                                                 .activate(&item.pin.target, Activation::Minimize),
@@ -1281,6 +1331,31 @@ fn run_dock() -> Result<Exit> {
                     DispatchMessageW(&message);
                 }
             }
+        }
+    }
+}
+
+fn open_picker(
+    hwnd: HWND,
+    scene: &Scene,
+    layout: Layout,
+    index: usize,
+    item: &DockItem,
+    fallback_anchor: POINT,
+) -> Option<Picker> {
+    let anchor = scene.icons.get(index).map_or(fallback_anchor, |icon| {
+        let mut point = POINT {
+            x: ((icon.x + icon.width / 2.0) * layout.scale) as i32,
+            y: (icon.y * layout.scale) as i32,
+        };
+        let _ = unsafe { ClientToScreen(hwnd, &mut point) };
+        point
+    });
+    match Picker::open(hwnd, anchor, &item.pin.target, &item.windows) {
+        Ok(picker) => Some(picker),
+        Err(error) => {
+            eprintln!("Could not open window picker: {error}");
+            None
         }
     }
 }

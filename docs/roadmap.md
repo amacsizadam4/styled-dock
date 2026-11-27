@@ -173,7 +173,8 @@ previews cancel correctly; and the visual checks show no clipping or unreadable 
 
 - [ ] Add native Jump Lists with recent documents and app tasks.
 - [ ] Add app progress indicators and overlay/unread badges.
-- [ ] Add window thumbnails and richer multiwindow activation/cycling.
+- [x] Add a live window picker for apps with multiple windows.
+- [ ] Add shortcuts for cycling through an app's windows.
 - [ ] Complete per-window identity and relaunch handling for browser profiles and
   hosted apps; current registered AppID handling still falls back to process grouping.
 - [ ] Reveal app windows while hovering during a file drag, improve packaged-app

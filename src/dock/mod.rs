@@ -4,3 +4,4 @@ pub(crate) mod downloads;
 pub(crate) mod layout;
 pub(crate) mod render;
 pub(crate) mod window;
+mod window_picker;

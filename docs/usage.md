@@ -31,6 +31,9 @@ executable in its final location before enabling startup; re-enable it if you mo
 
 ## Everyday controls
 
+- Click an app with multiple windows to show their previews. Select a preview to
+  focus or restore that window. Use the arrow keys and Enter to switch, or Esc
+  to dismiss the picker. Windows without a preview can be selected by title.
 - Ctrl+Alt+F focuses the dock; Ctrl+Alt+B focuses the status bar. Navigate with
   arrows, Tab, Home/End, activate with Enter/Space, or open the focused item's
   menu with the Menu key/Shift+F10. Escape returns to the previous window.
@@ -101,7 +104,7 @@ taskbars, so the watchdog cannot immediately hide them again.
 
 See [the roadmap](roadmap.md) for the complete parity checklist. This build does not yet
 implement full UI Automation for drawn dock icons, Win+number remapping, native
-Jump Lists, progress/overlay badges, window thumbnails, or simultaneous docks on
+Jump Lists, progress/overlay badges, or simultaneous docks on
 multiple monitors. Tray mirroring still uses an undocumented Windows protocol;
 initial discovery depends on app registration. Taskbar suppression targets the
 dock's selected display; Explorer's auto-hide preference remains global.
