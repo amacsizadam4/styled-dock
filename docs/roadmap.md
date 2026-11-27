@@ -64,7 +64,30 @@ Explorer restart, and fullscreen transitions still need hands-on verification.
 
 ## Development order
 
-### 1. Extend and verify multi-language support — English/Turkish foundation implemented
+### 1. Add GitHub release updates
+
+**Implementation added to the working tree; Windows execution and desktop
+verification remain pending.**
+
+- [x] Add an **Updates** page in the application's **Settings** screen with the
+  installed version, status, manual check/update actions, and release-notes link.
+- [x] Persist an **Auto-update** checkbox, checked by default. Release builds
+  check/install/restart on launch, at most once daily; manual actions bypass this.
+- [x] Download the stable GitHub executable in the background and verify size and
+  GitHub's SHA-256 digest. Independent signed-release verification remains open.
+- [x] Use a helper to gracefully stop the dock/watchdog, replace the executable
+  atomically, preserve config/location/working directory, and restart.
+- [x] Retain a backup and require native-startup acknowledgement; attempt rollback
+  when startup fails, leaving recovery details if the executable remains locked.
+- [ ] Add independent release signing and signature verification.
+- [ ] Verify interrupted downloads, invalid digests, unwritable folders, startup
+  failure/rollback, existing pins/settings, and update/restart with taskbar hiding.
+  Run the lifecycle smoke matrix and inspect English/Turkish Updates pages.
+
+**Done when:** Windows update/recovery checks pass with settings intact and the
+Updates page passes functional, keyboard, and visual checks.
+
+### 2. Extend and verify multi-language support — English/Turkish foundation implemented
 
 - [x] Introduce a shared localization system and translation resources, with
   English as the fallback for missing translations or unsupported languages.
@@ -94,14 +117,14 @@ Startup shortcut. The existing dock-menu startup action remains available.
 and saved overrides work, missing translations fall back cleanly to English,
 and the initial translations pass functional and visual checks.
 
-### 2. Stabilize the existing desktop integration
+### 3. Stabilize the existing desktop integration
 
 **In progress — software changes included in v1.2.0.** The
 [desktop validation record](desktop-validation.md) contains the environment,
 repeat-test evidence, end-to-end matrix, reproduction commands, and pending
-physical/interactive checks. Phase 2 is not yet complete.
+physical/interactive checks. Phase 3 is not yet complete.
 
-The remaining manual checks are deferred at the user's request while phase 3
+The remaining manual checks are deferred at the user's request while phase 4
 software work proceeds.
 
 - [x] Handle resume without requiring the top bar, refresh device subscriptions,
@@ -131,7 +154,7 @@ software work proceeds.
 lifecycle scenarios, and a recorded Windows/display test matrix supports the
 documented behavior. Any remaining compatibility limits must be explicit.
 
-### 3. Finish everyday usability and accessibility
+### 4. Finish everyday usability and accessibility
 
 **Software began shipping in v1.2.0; verification in progress.** See
 [usability-accessibility.md](usability-accessibility.md) for usage, tests, and
@@ -169,7 +192,7 @@ explicit hardware/assistive-technology/visual limits.
 **Done when:** core workflows work by mouse, keyboard, and assistive technology;
 previews cancel correctly; and the visual checks show no clipping or unreadable controls.
 
-### 4. Deepen taskbar replacement features
+### 5. Deepen taskbar replacement features
 
 - [ ] Add native Jump Lists with recent documents and app tasks.
 - [ ] Add app progress indicators and overlay/unread badges.
@@ -186,7 +209,7 @@ previews cancel correctly; and the visual checks show no clipping or unreadable 
 **Done when:** each added feature has an end-to-end Windows check, and app identity,
 display, and virtual-desktop rules are documented before expanding coverage.
 
-### 5. Add plugin support
+### 6. Add plugin support
 
 - [ ] Define the first extension points for dock items/actions and status or Quick
   Settings panels, and document which core services plugins can use.
@@ -203,7 +226,7 @@ display, and virtual-desktop rules are documented before expanding coverage.
 and removed; compatibility and failure cases are verified; and core behavior
 continues to work with plugins disabled. Runtime and distribution choices remain open.
 
-### 6. Optimize the existing code and structure — after missing features
+### 7. Optimize the existing code and structure — after missing features
 
 Use the completed feature set to guide a focused refactoring and profiling pass.
 Small structural changes needed by earlier features can happen in those phases;
@@ -236,7 +259,7 @@ features and recovery behavior pass regression checks, and performance changes
 have repeatable before/after measurements. Set numeric targets after collecting
 the baseline; file size alone is not evidence of a performance problem.
 
-### 7. Make distribution and upgrades dependable
+### 8. Make distribution and upgrades dependable
 
 The portable v1.0 package already exists. This phase builds on that baseline.
 
@@ -245,7 +268,8 @@ The portable v1.0 package already exists. This phase builds on that baseline.
 - [ ] Make portable packaging and checksums repeatable, with clear release notes
   and documented support/recovery steps for each release.
 - [ ] Evaluate an installer and code signing for wider distribution.
-- [ ] Evaluate automatic updates with config preservation and a recovery path.
+- [ ] Validate distribution packages against the GitHub updater from phase 1,
+  including config preservation and recovery on a clean Windows profile.
 
 **Done when:** a new user can install/run, configure, quit, upgrade, and remove a
 documented build without losing settings or leaving Windows shell state altered.

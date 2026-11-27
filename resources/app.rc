@@ -39,6 +39,14 @@ BEGIN
     LTEXT "", 134, 129, 16, 300, 24, SS_NOPREFIX
     LTEXT "", 135, 130, 42, 298, 15, SS_NOPREFIX
 
+    LTEXT "", 158, 130, 71, 298, 14
+    CONTROL "Auto-update", 154, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 130, 94, 298, 16
+    LTEXT "Automatically checks, installs, and restarts on launch. Changes apply after saving.", 159, 130, 118, 298, 28
+    PUSHBUTTON "Check for updates", 155, 130, 153, 140, 20
+    PUSHBUTTON "Update and restart", 156, 280, 153, 148, 20
+    LTEXT "", 157, 130, 180, 298, 30, SS_NOPREFIX
+    PUSHBUTTON "Release notes", 160, 130, 211, 140, 17
+
     LTEXT "&Language", 231, 130, 73, 95, 11
     COMBOBOX 149, 249, 70, 179, 96, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
     CONTROL "Start automatically when I sign in to Windows", 150, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 130, 112, 298, 16

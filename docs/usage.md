@@ -108,3 +108,27 @@ Jump Lists, progress/overlay badges, or simultaneous docks on
 multiple monitors. Tray mirroring still uses an undocumented Windows protocol;
 initial discovery depends on app registration. Taskbar suppression targets the
 dock's selected display; Explorer's auto-hide preference remains global.
+
+## Updates
+
+Settings → Updates shows the installed version, update status, a release-notes
+link, **Check for updates**, and **Update and restart**. **Auto-update** is enabled
+by default. Save and restart to apply changes to this preference.
+
+Release builds attempt an automatic update on launch, at most once per day.
+Manual checks and updates bypass that interval. Updates use the latest stable
+GitHub release; development builds disable downloads and replacement.
+
+The helper downloads `styled-dock.exe`, checks its size and GitHub SHA-256 digest,
+then gracefully closes the dock and waits for its taskbar watchdog. It replaces
+the executable atomically, restarts with the same working directory, and requires
+a native-startup acknowledgement. Settings and pins are not replaced. A failed
+startup triggers a graceful shutdown and restoration from the backup when the
+executable is no longer in use. If recovery is blocked, the backup remains beside
+the executable as `.update-backup` for manual recovery.
+
+Updates require write access to the executable's folder. Protected installations
+must be updated manually; the updater does not request administrator privileges.
+Status and failure details live under `%LOCALAPPDATA%\StyledDock\Updates`.
+The digest verifies integrity against GitHub's metadata; this currently trusts
+the repository and HTTPS, and is not independent release-signature verification.

@@ -97,3 +97,21 @@ atomically. Invalid configuration offers backup and reset.
 Tests live next to the relevant Rust code under `#[cfg(test)]`. Native integration
 tests need Windows and can depend on desktop/Explorer state. The CI workflow
 builds the app and runs selected tests that do not require an interactive desktop.
+
+## GitHub updater
+
+`platform/update.rs` launches the embedded `scripts/update.ps1` outside the UI
+process. A named mutex serializes helpers; the script queries GitHub's latest
+stable release, requires an exact `styled-dock.exe` asset with SHA-256 metadata,
+and stages it beside the executable for atomic replacement. `--quit` and the
+existing watchdog handle shell restoration. A temporary environment variable
+requests a startup acknowledgement after native window/service initialization.
+The previous executable remains as `.update-backup`; failures are recorded under
+`%LOCALAPPDATA%\StyledDock\Updates`. No config files are distributed by the updater.
+
+For releases, upload an x64 MSVC release build named exactly `styled-dock.exe`.
+The GitHub tag must be `vMAJOR.MINOR.PATCH` (or omit `v`), match the compiled Cargo
+version, and exceed the installed version. Future releases must retain the startup
+acknowledgement protocol. Prereleases and drafts are excluded. GitHub must supply
+the asset digest. The current trust boundary is GitHub/HTTPS; independent release
+signatures are not yet implemented. Development builds cannot self-update.

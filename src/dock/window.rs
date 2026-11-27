@@ -364,6 +364,7 @@ fn run_dock() -> Result<Exit> {
     }
     let config = config::load()?;
     crate::i18n::configure(&config.general.language);
+    let auto_update = config.general.auto_update;
     let mut appearance = config.appearance;
     crate::theme::configure(appearance.theme);
     let mut dock = DockSize::new(appearance);
@@ -484,6 +485,8 @@ fn run_dock() -> Result<Exit> {
             return Err(Error::from_thread());
         }
 
+        crate::platform::update::ready();
+        crate::platform::update::automatic(auto_update);
         let mut message = MSG::default();
         let mut pressed: Option<Press> = None;
         let mut picker: Option<Picker> = None;

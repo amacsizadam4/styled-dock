@@ -20,6 +20,9 @@ jobs:
         run: cargo +stable build --locked --example desktop_smoke
       - name: Test dock behavior
         run: cargo +stable test --locked window::tests -- --test-threads=1
+      - name: Test updater validation (offline)
+        shell: powershell
+        run: .\scripts\test-update.ps1
       - name: Test configuration
         run: cargo +stable test --locked config::tests -- --test-threads=1
       - name: Test localization resources and fallback

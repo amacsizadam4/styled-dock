@@ -11,3 +11,5 @@ pub(crate) mod system;
 pub(crate) mod taskbar;
 pub(crate) mod tray;
 pub(crate) mod watcher;
+
+pub(crate) mod update;

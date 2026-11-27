@@ -79,6 +79,11 @@ const ID_LANGUAGE: i32 = 149;
 const ID_STARTUP: i32 = 150;
 const ID_COPY: i32 = 152;
 const ID_ERROR: i32 = 153;
+const ID_AUTO_UPDATE: i32 = 154;
+const ID_CHECK_UPDATE: i32 = 155;
+const ID_INSTALL_UPDATE: i32 = 156;
+const ID_UPDATE_STATUS: i32 = 157;
+const ID_VERSION: i32 = 158;
 const TBM_GETPOS: u32 = WM_USER;
 const APPEARANCE_SLIDERS: [(i32, i32, u32, u32); 4] = [
     (ID_DOCK_SIZE, 211, 60, 160),
@@ -88,7 +93,7 @@ const APPEARANCE_SLIDERS: [(i32, i32, u32, u32); 4] = [
 ];
 const COMBO_BOXES: [i32; 4] = [ID_LANGUAGE, ID_DISPLAY, ID_MODE, ID_THEME];
 
-const PAGES: [(&str, &str, &str, &[i32]); 6] = [
+const PAGES: [(&str, &str, &str, &[i32]); 7] = [
     (
         "General",
         "General Settings",
@@ -182,10 +187,24 @@ const PAGES: [(&str, &str, &str, &[i32]); 6] = [
             ID_INSTALLED,
         ],
     ),
+    (
+        "Updates",
+        "Updates",
+        "Manage automatic updates from GitHub.",
+        &[
+            ID_AUTO_UPDATE,
+            ID_CHECK_UPDATE,
+            ID_INSTALL_UPDATE,
+            ID_UPDATE_STATUS,
+            ID_VERSION,
+            159,
+            160,
+        ],
+    ),
 ];
 
 // Keep a marker for every page; a missing marker must fail at compile time.
-const PAGE_MARKS: [&str; PAGES.len()] = ["⚙", "▣", "◐", "▦", "⌕", "▤"];
+const PAGE_MARKS: [&str; PAGES.len()] = ["⚙", "▣", "◐", "▦", "⌕", "▤", "↻"];
 
 pub struct SettingsWindow {
     hwnd: HWND,
@@ -601,6 +620,7 @@ impl State {
         };
         control_message(hwnd, ID_MODE, CB_SETCURSEL, mode, 0);
         for (id, value) in [
+            (ID_AUTO_UPDATE, self.config.general.auto_update),
             (ID_START, self.config.dock.show_start),
             (ID_SEARCH, self.config.dock.show_search),
             (ID_DOWNLOADS, self.config.dock.show_downloads),
@@ -814,6 +834,7 @@ impl State {
         let mode = control_message(hwnd, ID_MODE, CB_GETCURSEL, 0, 0);
         self.config.placement.reserve_space = mode == 1;
         self.config.placement.auto_hide = mode == 2;
+        self.config.general.auto_update = checked(hwnd, ID_AUTO_UPDATE);
         self.config.dock.show_start = checked(hwnd, ID_START);
         self.config.dock.show_search = checked(hwnd, ID_SEARCH);
         self.config.dock.show_downloads = checked(hwnd, ID_DOWNLOADS);
@@ -860,6 +881,12 @@ impl State {
     fn command(&mut self, hwnd: HWND, id: i32) -> Result<()> {
         let selection = selected_pin(hwnd);
         match id {
+            160 => {
+                crate::shell::launch("https://github.com/amacsizadam4/styled-dock/releases/latest")?
+            }
+            ID_CHECK_UPDATE | ID_INSTALL_UPDATE => {
+                crate::platform::update::start(id == ID_INSTALL_UPDATE)?;
+            }
             1 => self.save(hwnd)?,
             ID_PATH => {
                 if self.source.path.is_file() {
@@ -1181,8 +1208,20 @@ unsafe extern "system" fn dialog_proc(
                 }
             }
             control_message(hwnd, ID_PAGES, LB_SETCURSEL, 0, 0);
+            set_text(
+                hwnd,
+                ID_VERSION,
+                &format!("Styled Dock {}", env!("CARGO_PKG_VERSION")),
+            );
+            unsafe {
+                SetTimer(Some(hwnd), 904, 1000, None);
+            }
             state.fill(hwnd);
             state.translate(hwnd);
+            1
+        }
+        WM_TIMER if wparam.0 == 904 => {
+            set_text(hwnd, ID_UPDATE_STATUS, &crate::platform::update::status());
             1
         }
         WM_NCDESTROY => {

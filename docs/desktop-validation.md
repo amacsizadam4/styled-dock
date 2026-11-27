@@ -136,3 +136,20 @@ covered by that recovery claim.
 - [SendMessageTimeoutW](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendmessagetimeoutw):
   timeout/recipient-exit behavior used for cross-thread tray forwarding. Calls
   into a window on the same queue are synchronous and do not gain that timeout.
+
+## Updater working-tree checks — 2026-11-27
+
+Windows-target `cargo check --tests` passed from Fedora with the MSVC target and
+resource build disabled in a temporary check manifest pointing at this checkout.
+This checks Rust types only; it does not validate Windows resources or execute tests.
+`git diff --check` passed. Added config coverage for the default-enabled preference
+and saving an explicit opt-out; existing Settings tests enumerate the new page.
+`scripts/test-update.ps1` provides offline parser, version, asset/digest/URL, and
+PE architecture checks, also wired into Windows CI.
+
+Windows execution is blocked: Fedora's `smb.service` has crashed, leaving the VM's
+`S:` checkout unavailable. Restart requires administrator authentication. Native
+config/localization/Settings tests, offline PowerShell tests, the lifecycle smoke
+matrix, and English/Turkish native-scale page captures have **not run** for this
+change. Full download/install/rollback testing is also pending. Do not infer
+runtime verification from the cross-target type check.

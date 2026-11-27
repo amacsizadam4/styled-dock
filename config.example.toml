@@ -2,6 +2,8 @@
 # Relative paths resolve next to the configuration file.
 
 [general]
+# Check, install, and restart for stable GitHub updates on launch (release builds).
+auto_update = true
 # "auto" follows Windows; "en" = English, "tr" = Turkish.
 language = "auto"
 # Finish setup in the app to save this as true. Existing settings and pins are kept.

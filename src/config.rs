@@ -36,6 +36,7 @@ pub struct Config {
 #[serde(default, deny_unknown_fields)]
 pub struct General {
     pub setup_completed: bool,
+    pub auto_update: bool,
     #[serde(default = "automatic_language")]
     pub language: String,
 }
@@ -44,6 +45,7 @@ impl Default for General {
     fn default() -> Self {
         Self {
             setup_completed: false,
+            auto_update: true,
             language: automatic_language(),
         }
     }
@@ -341,6 +343,10 @@ impl Source {
         put(
             &mut document["general"]["setup_completed"],
             value(config.general.setup_completed),
+        );
+        put(
+            &mut document["general"]["auto_update"],
+            value(config.general.auto_update),
         );
         if !document.contains_key("dock") {
             document["dock"] = Item::Table(Table::new());
@@ -709,6 +715,7 @@ mod tests {
         };
         let mut draft = source.draft()?;
         draft.appearance.size_percent = 140;
+        draft.general.auto_update = false;
         draft.general.language = "tr".into();
         // Simulate a concurrent editor: a normal save must fail, but exporting
         // the user's draft must remain possible without losing the external edit.
@@ -719,6 +726,7 @@ mod tests {
         let copy = parse(&fs::read_to_string(&exported).map_err(io_error)?, &exported)?;
         assert_eq!(copy.appearance.size_percent, 140);
         assert_eq!(copy.general.language, "tr");
+        assert!(!copy.general.auto_update);
         assert_eq!(
             copy.pinned[0].target,
             root.join("editor.exe").to_string_lossy()
@@ -751,6 +759,7 @@ mod tests {
         let path = Path::new("config.toml");
         let legacy = parse("pinned = []", path)?;
         assert!(!legacy.general.setup_completed);
+        assert!(legacy.general.auto_update);
         assert_eq!(legacy.general.language, "auto");
         assert_eq!(parse("pinned = []", path)?.dock, Dock::default());
         assert_eq!(
